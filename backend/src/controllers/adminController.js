@@ -1,6 +1,117 @@
 const db = require("../db");
 const bcrypt = require("bcrypt");
 
+let paymentConfirmationTableReady = false;
+let warehouseInventorySchemaReady = false;
+
+const ensurePaymentConfirmationTable = async () => {
+  if (paymentConfirmationTableReady) {
+    return;
+  }
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS rider_payment_confirmation (
+      order_id INT PRIMARY KEY REFERENCES orders(order_id) ON DELETE CASCADE,
+      rider_id INT NOT NULL REFERENCES rider(rider_id),
+      rider_message TEXT NOT NULL,
+      sent_at TIMESTAMP DEFAULT NOW(),
+      admin_confirmed_at TIMESTAMP,
+      admin_confirmed_by INT REFERENCES admin(admin_id)
+    )
+  `);
+
+  paymentConfirmationTableReady = true;
+};
+
+const ensureWarehouseInventorySchema = async () => {
+  if (warehouseInventorySchemaReady) {
+    return;
+  }
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS delivery_inventory_allocation (
+      allocation_id SERIAL PRIMARY KEY,
+      delivery_id INT NOT NULL REFERENCES delivery(delivery_id) ON DELETE CASCADE,
+      order_id INT NOT NULL REFERENCES orders(order_id) ON DELETE CASCADE,
+      product_id INT NOT NULL REFERENCES product(product_id),
+      warehouse_id INT NOT NULL REFERENCES warehouse(warehouse_id),
+      allocated_quantity INT NOT NULL CHECK (allocated_quantity > 0),
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
+  await db.query(
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_inventory_product_warehouse ON inventory(product_id, warehouse_id)",
+  );
+
+  await db.query(`
+    INSERT INTO warehouse (warehouse_id, name, location)
+    VALUES
+      (1, 'Warehouse 1', 'Main Hub 1'),
+      (2, 'Warehouse 2', 'Main Hub 2'),
+      (3, 'Warehouse 3', 'Main Hub 3')
+    ON CONFLICT (warehouse_id) DO NOTHING
+  `);
+
+  try {
+    const missingInventoryRows = await db.query(`
+      SELECT p.product_id, COALESCE(p.stock_quantity, 0)::INT AS stock_quantity
+      FROM product p
+      LEFT JOIN inventory i ON i.product_id = p.product_id
+      GROUP BY p.product_id, p.stock_quantity
+      HAVING COUNT(i.inventory_id) = 0
+    `);
+
+    for (const row of missingInventoryRows.rows) {
+      const initialStock = Number(row.stock_quantity || 0);
+      if (initialStock <= 0) continue;
+
+      await db.query(
+        `
+        INSERT INTO inventory (inventory_id, product_id, warehouse_id, stock_quantity, last_updated)
+        VALUES (
+          (SELECT COALESCE(MAX(inventory_id), 0) + 1 FROM inventory),
+          $1,
+          1,
+          $2,
+          NOW()
+        )
+        ON CONFLICT (product_id, warehouse_id)
+        DO NOTHING
+        `,
+        [row.product_id, initialStock],
+      );
+    }
+  } catch (error) {
+    if (error.code !== "42703") {
+      throw error;
+    }
+  }
+
+  warehouseInventorySchemaReady = true;
+};
+
+const syncProductStockTotal = async (productId) => {
+  try {
+    await db.query(
+      `
+      UPDATE product
+      SET stock_quantity = (
+        SELECT COALESCE(SUM(stock_quantity), 0)
+        FROM inventory
+        WHERE product_id = $1
+      )
+      WHERE product_id = $1
+      `,
+      [productId],
+    );
+  } catch (error) {
+    if (error.code !== "42703") {
+      throw error;
+    }
+  }
+};
+
 // Get all pending rider requests
 exports.getRiderRequests = async (req, res) => {
   try {
@@ -216,9 +327,7 @@ exports.getDashboardStats = async (req, res) => {
     const pendingRequests = await db.query(
       "SELECT COUNT(*) as count FROM rider_requests WHERE status = 'pending'",
     );
-    const ordersCount = await db.query(
-      "SELECT COUNT(*) as count FROM orders",
-    );
+    const ordersCount = await db.query("SELECT COUNT(*) as count FROM orders");
     const revenueRes = await db.query(`
       SELECT COALESCE(SUM(total_price), 0) AS revenue
       FROM orders
@@ -298,14 +407,56 @@ exports.deleteProduct = async (req, res) => {
 // Orders Management
 exports.getOrders = async (req, res) => {
   try {
+    await ensurePaymentConfirmationTable();
+    await ensureWarehouseInventorySchema();
+
     const result = await db.query(`
-      SELECT o.*, d.rider_id, d.warehouse_id, d.delivery_status 
+      SELECT 
+        o.*, 
+        d.rider_id, 
+        d.warehouse_id, 
+        d.delivery_status,
+        rpc.rider_message AS rider_payment_message,
+        rpc.sent_at AS rider_payment_sent_at,
+        rpc.admin_confirmed_at,
+        rpc.admin_confirmed_by,
+        (
+          SELECT COALESCE(
+            json_agg(
+              json_build_object(
+                'warehouse_id', dia.warehouse_id,
+                'product_id', dia.product_id,
+                'product_name', p2.product_name,
+                'allocated_quantity', dia.allocated_quantity
+              )
+              ORDER BY dia.warehouse_id, dia.product_id
+            ),
+            '[]'::json
+          )
+          FROM delivery_inventory_allocation dia
+          JOIN product p2 ON p2.product_id = dia.product_id
+          WHERE dia.order_id = o.order_id
+        ) AS warehouse_allocations,
+        (
+          SELECT json_agg(
+            json_build_object(
+              'product_name', p.product_name,
+              'quantity', oi.quantity,
+              'unit_price', oi.unit_price
+            )
+          )
+          FROM order_item oi
+          JOIN product p ON oi.product_id = p.product_id
+          WHERE oi.order_id = o.order_id
+        ) AS items
       FROM orders o 
       LEFT JOIN delivery d ON o.order_id = d.order_id 
+      LEFT JOIN rider_payment_confirmation rpc ON rpc.order_id = o.order_id
       ORDER BY o.order_date DESC
     `);
     res.json(result.rows);
   } catch (err) {
+    console.error("Get orders error:", err);
     res.status(500).json({ error: "Failed to fetch orders" });
   }
 };
@@ -319,6 +470,188 @@ exports.updateOrder = async (req, res) => {
     res.json({ message: "Order updated successfully" });
   } catch (err) {
     res.status(500).json({ error: "Failed to update order status" });
+  }
+};
+
+exports.getInventorySummary = async (req, res) => {
+  try {
+    await ensureWarehouseInventorySchema();
+
+    const productsRes = await db.query(`
+      SELECT
+        p.product_id,
+        p.product_name,
+        p.price,
+        COALESCE(SUM(i.stock_quantity), 0)::INT AS total_stock,
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'warehouse_id', w.warehouse_id,
+              'warehouse_name', w.name,
+              'stock_quantity', COALESCE(i.stock_quantity, 0)::INT
+            )
+            ORDER BY w.warehouse_id
+          ) FILTER (WHERE w.warehouse_id IS NOT NULL),
+          '[]'::json
+        ) AS warehouses
+      FROM product p
+      CROSS JOIN warehouse w
+      LEFT JOIN inventory i
+        ON i.product_id = p.product_id
+       AND i.warehouse_id = w.warehouse_id
+      GROUP BY p.product_id, p.product_name, p.price
+      ORDER BY p.product_id
+    `);
+
+    const warehouseTotalsRes = await db.query(`
+      SELECT
+        w.warehouse_id,
+        w.name AS warehouse_name,
+        COALESCE(SUM(i.stock_quantity), 0)::INT AS total_stock
+      FROM warehouse w
+      LEFT JOIN inventory i ON i.warehouse_id = w.warehouse_id
+      GROUP BY w.warehouse_id, w.name
+      ORDER BY w.warehouse_id
+    `);
+
+    const overallTotalStock = warehouseTotalsRes.rows.reduce(
+      (sum, row) => sum + Number(row.total_stock),
+      0,
+    );
+
+    res.json({
+      products: productsRes.rows,
+      warehouses: warehouseTotalsRes.rows,
+      overall_total_stock: overallTotalStock,
+    });
+  } catch (error) {
+    console.error("Get inventory summary error:", error);
+    res.status(500).json({ error: "Failed to fetch inventory summary" });
+  }
+};
+
+exports.updateInventoryStock = async (req, res) => {
+  try {
+    await ensureWarehouseInventorySchema();
+
+    const productId = Number(req.params.product_id);
+    const warehouseId = Number(req.params.warehouse_id);
+    const stockQuantity = Number(req.body.stock_quantity);
+
+    if (!Number.isInteger(productId) || !Number.isInteger(warehouseId)) {
+      return res.status(400).json({
+        error: "product_id and warehouse_id must be valid integers",
+      });
+    }
+
+    if (!Number.isInteger(stockQuantity) || stockQuantity < 0) {
+      return res.status(400).json({
+        error: "stock_quantity must be a non-negative integer",
+      });
+    }
+
+    const productRes = await db.query(
+      "SELECT product_id FROM product WHERE product_id = $1",
+      [productId],
+    );
+
+    if (productRes.rows.length === 0) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    const warehouseRes = await db.query(
+      "SELECT warehouse_id FROM warehouse WHERE warehouse_id = $1",
+      [warehouseId],
+    );
+
+    if (warehouseRes.rows.length === 0) {
+      return res.status(404).json({ error: "Warehouse not found" });
+    }
+
+    await db.query(
+      `
+      INSERT INTO inventory (inventory_id, product_id, warehouse_id, last_updated, stock_quantity)
+      VALUES (
+        (SELECT COALESCE(MAX(inventory_id), 0) + 1 FROM inventory),
+        $1,
+        $2,
+        NOW(),
+        $3
+      )
+      ON CONFLICT (product_id, warehouse_id)
+      DO UPDATE
+      SET stock_quantity = EXCLUDED.stock_quantity,
+          last_updated = NOW()
+      `,
+      [productId, warehouseId, stockQuantity],
+    );
+
+    await syncProductStockTotal(productId);
+
+    res.json({ message: "Inventory stock updated successfully" });
+  } catch (error) {
+    console.error("Update inventory stock error:", error);
+    res.status(500).json({ error: "Failed to update inventory stock" });
+  }
+};
+
+exports.confirmPayment = async (req, res) => {
+  try {
+    const orderId = req.params.id;
+
+    await ensurePaymentConfirmationTable();
+
+    const orderRes = await db.query(
+      "SELECT * FROM orders WHERE order_id = $1",
+      [orderId],
+    );
+
+    if (orderRes.rows.length === 0) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+
+    const order = orderRes.rows[0];
+
+    if (order.order_status !== "delivered") {
+      return res.status(400).json({
+        error: "Payment can only be confirmed for delivered orders",
+      });
+    }
+
+    if (order.payment_status === "paid") {
+      return res.status(400).json({ error: "Payment already confirmed" });
+    }
+
+    const paymentConfirmationRes = await db.query(
+      "SELECT order_id FROM rider_payment_confirmation WHERE order_id = $1",
+      [orderId],
+    );
+
+    if (paymentConfirmationRes.rows.length === 0) {
+      return res.status(400).json({
+        error: "Rider payment confirmation message is required first",
+      });
+    }
+
+    await db.query(
+      "UPDATE orders SET payment_status = 'paid' WHERE order_id = $1",
+      [orderId],
+    );
+
+    await db.query(
+      `
+      UPDATE rider_payment_confirmation
+      SET admin_confirmed_at = NOW(),
+          admin_confirmed_by = $2
+      WHERE order_id = $1
+      `,
+      [orderId, req.user.id],
+    );
+
+    res.json({ message: "Payment confirmed" });
+  } catch (err) {
+    console.error("Confirm payment error:", err);
+    res.status(500).json({ error: "Failed to confirm payment" });
   }
 };
 

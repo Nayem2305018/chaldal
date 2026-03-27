@@ -33,8 +33,25 @@ router.put(
 // Users Management
 router.get("/users", adminOnly, adminController.getAllUsers);
 
+// Inventory Management
+router.get(
+  "/inventory/summary",
+  adminOnly,
+  adminController.getInventorySummary,
+);
+router.put(
+  "/inventory/:product_id/:warehouse_id",
+  adminOnly,
+  adminController.updateInventoryStock,
+);
+
 // Orders Management
 router.get("/orders", adminOnly, adminController.getOrders);
 router.put("/order/:id", adminOnly, adminController.updateOrder);
+router.post(
+  "/order/:id/confirm-payment",
+  adminOnly,
+  adminController.confirmPayment,
+);
 
 module.exports = router;

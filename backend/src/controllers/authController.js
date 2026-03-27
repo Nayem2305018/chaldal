@@ -8,8 +8,62 @@ const VALID_APPOINTMENT_CODES = {
   APP_CODE_001: "admin-created",
 };
 
+const isRecoverableAuthSchemaError = (error) => {
+  // 42P01: undefined_table, 42703: undefined_column
+  return error && (error.code === "42P01" || error.code === "42703");
+};
+
+const findUserByEmail = async (email) => {
+  const tablePriority = [
+    { table: "users", role: "user" },
+    { table: "rider", role: "rider" },
+    { table: "admin", role: "admin" },
+  ];
+
+  for (const { table, role } of tablePriority) {
+    try {
+      const result = await db.query(`SELECT * FROM ${table} WHERE email = $1`, [
+        email,
+      ]);
+      if (result.rows.length > 0) {
+        return { user: result.rows[0], userRole: role };
+      }
+    } catch (error) {
+      if (isRecoverableAuthSchemaError(error)) {
+        console.warn(`Skipping ${table} lookup: ${error.message}`);
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  return { user: null, userRole: null };
+};
+
+const safeEmailExists = async (tableName, email) => {
+  try {
+    const result = await db.query(
+      `SELECT 1 FROM ${tableName} WHERE email = $1`,
+      [email],
+    );
+    return result.rows.length > 0;
+  } catch (error) {
+    if (isRecoverableAuthSchemaError(error)) {
+      console.warn(
+        `Skipping duplicate email check for ${tableName}: ${error.message}`,
+      );
+      return false;
+    }
+    throw error;
+  }
+};
+
 // Generate JWT Token
 const generateToken = (id, role, email) => {
+  if (!process.env.JWT_SECRET) {
+    throw new Error("JWT_SECRET is not configured");
+  }
+
   return jwt.sign({ id, role, email }, process.env.JWT_SECRET, {
     expiresIn: "1h",
   });
@@ -33,30 +87,16 @@ exports.signup = async (req, res) => {
       return res.status(400).json({ error: "Role must be 'user' or 'rider'" });
     }
 
-    // Check if email already exists across all tables
-    const userExists = await db.query(
-      "SELECT email FROM users WHERE email = $1",
-      [email],
-    );
-    const riderExists = await db.query(
-      "SELECT email FROM rider WHERE email = $1",
-      [email],
-    );
-    const adminExists = await db.query(
-      "SELECT email FROM admin WHERE email = $1",
-      [email],
-    );
-    const riderRequestExists = await db.query(
-      "SELECT email FROM rider_requests WHERE email = $1",
-      [email],
-    );
+    // Check if email already exists across all auth-related tables
+    const [userExists, riderExists, adminExists, riderRequestExists] =
+      await Promise.all([
+        safeEmailExists("users", email),
+        safeEmailExists("rider", email),
+        safeEmailExists("admin", email),
+        safeEmailExists("rider_requests", email),
+      ]);
 
-    if (
-      userExists.rows.length > 0 ||
-      riderExists.rows.length > 0 ||
-      adminExists.rows.length > 0 ||
-      riderRequestExists.rows.length > 0
-    ) {
+    if (userExists || riderExists || adminExists || riderRequestExists) {
       return res.status(409).json({ error: "Email already registered" });
     }
 
@@ -138,41 +178,7 @@ exports.login = async (req, res) => {
       return res.status(400).json({ error: "Email and password are required" });
     }
 
-    let user = null;
-    let userRole = null;
-
-    // Search in users table
-    const userResult = await db.query("SELECT * FROM users WHERE email = $1", [
-      email,
-    ]);
-    if (userResult.rows.length > 0) {
-      user = userResult.rows[0];
-      userRole = "user";
-    }
-
-    // Search in rider table
-    if (!user) {
-      const riderResult = await db.query(
-        "SELECT * FROM rider WHERE email = $1",
-        [email],
-      );
-      if (riderResult.rows.length > 0) {
-        user = riderResult.rows[0];
-        userRole = "rider";
-      }
-    }
-
-    // Search in admin table
-    if (!user) {
-      const adminResult = await db.query(
-        "SELECT * FROM admin WHERE email = $1",
-        [email],
-      );
-      if (adminResult.rows.length > 0) {
-        user = adminResult.rows[0];
-        userRole = "admin";
-      }
-    }
+    const { user, userRole } = await findUserByEmail(email);
 
     // User not found
     if (!user) {
@@ -183,14 +189,23 @@ exports.login = async (req, res) => {
     let passwordMatch = false;
 
     if (userRole === "admin") {
-      // Admin: direct string comparison (no bcrypt)
-      passwordMatch = password === user.password;
+      if (user.password_hash) {
+        try {
+          passwordMatch = await bcrypt.compare(password, user.password_hash);
+        } catch (err) {
+          passwordMatch = password === user.password_hash;
+        }
+      }
+
+      if (!passwordMatch && user.password) {
+        passwordMatch = password === user.password;
+      }
     } else if (userRole === "user" || userRole === "rider") {
       // User & Rider: try bcrypt comparison first, then fallback to plain text if necessary
       if (!user.password_hash && !user.password) {
         return res.status(401).json({ error: "Invalid credentials" });
       }
-      
+
       try {
         if (user.password_hash) {
           passwordMatch = await bcrypt.compare(password, user.password_hash);
@@ -202,7 +217,7 @@ exports.login = async (req, res) => {
 
       // Final strict fallback for plain text if bcrypt didn't match
       if (!passwordMatch) {
-         passwordMatch = password === (user.password_hash || user.password);
+        passwordMatch = password === (user.password_hash || user.password);
       }
     }
 
@@ -220,8 +235,18 @@ exports.login = async (req, res) => {
       userId = user.admin_id;
     }
 
+    // JWT must exist before issuing tokens
+    if (!process.env.JWT_SECRET) {
+      return res.status(500).json({
+        error:
+          "Server authentication is not configured. Please set JWT_SECRET.",
+      });
+    }
+
     // Generate JWT Token
     const token = generateToken(userId, userRole, email);
+
+    const displayName = user.name || user.rider_name || "User";
 
     // Determine redirect path
     const redirectPath =
@@ -237,7 +262,7 @@ exports.login = async (req, res) => {
       role: userRole,
       user: {
         id: userId,
-        name: user.name,
+        name: displayName,
         email: user.email,
       },
       redirectPath,
