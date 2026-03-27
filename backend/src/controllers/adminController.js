@@ -219,6 +219,11 @@ exports.getDashboardStats = async (req, res) => {
     const ordersCount = await db.query(
       "SELECT COUNT(*) as count FROM orders",
     );
+    const revenueRes = await db.query(`
+      SELECT COALESCE(SUM(total_price), 0) AS revenue
+      FROM orders
+      WHERE order_status = 'delivered'
+    `);
 
     res.status(200).json({
       stats: {
@@ -226,6 +231,7 @@ exports.getDashboardStats = async (req, res) => {
         totalRiders: parseInt(ridersCount.rows[0].count),
         pendingRiderRequests: parseInt(pendingRequests.rows[0].count),
         totalOrders: parseInt(ordersCount.rows[0].count),
+        totalRevenue: parseFloat(revenueRes.rows[0].revenue),
       },
     });
   } catch (error) {
