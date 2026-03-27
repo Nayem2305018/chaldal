@@ -1,0 +1,120 @@
+.category-filter-container {
+  display: grid;
+  grid-template-columns: 250px 1fr;
+  gap: 30px;
+  min-height: 100vh;
+}
+
+.filter-section {
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  height: fit-content;
+  position: sticky;
+  top: 20px;
+}
+
+.filter-section h2 {
+  margin-top: 0;
+  color: #282c34;
+  border-bottom: 2px solid #61dafb;
+  padding-bottom: 10px;
+  font-size: 1.2rem;
+}
+
+.category-filter-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.filter-btn {
+  padding: 12px 15px;
+  background: #f8f9fa;
+  border: 2px solid #ecf0f1;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: #2c3e50;
+  transition: all 0.3s;
+  text-align: left;
+}
+
+.filter-btn:hover {
+  border-color: #61dafb;
+  background: #e8f8ff;
+  color: #3ba5c2;
+}
+
+.filter-btn.active {
+  background: linear-gradient(135deg, #61dafb 0%, #3ba5c2 100%);
+  color: white;
+  border-color: transparent;
+  box-shadow: 0 4px 12px rgba(97, 218, 251, 0.3);
+}
+
+.products-section {
+  background: white;
+  padding: 30px;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.products-section h2 {
+  margin-top: 0;
+  color: #282c34;
+  border-bottom: 2px solid #61dafb;
+  padding-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.filter-tag {
+  background: #667eea;
+  color: white;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+/* Responsive */
+@media (max-width: 1024px) {
+  .category-filter-container {
+    grid-template-columns: 1fr;
+  }
+
+  .filter-section {
+    position: relative;
+    top: 0;
+  }
+
+  .category-filter-list {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .filter-btn {
+    flex: 1;
+    min-width: 120px;
+    padding: 10px 12px;
+    font-size: 0.85rem;
+  }
+}
+
+@media (max-width: 768px) {
+  .filter-btn {
+    min-width: 100px;
+    padding: 8px 10px;
+    font-size: 0.8rem;
+  }
+
+  .products-section h2 {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

@@ -1,0 +1,35 @@
+.App {
+  min-height: 100vh;
+  background: linear-gradient(to bottom, #f0fdf4 0%, #f8f9fa 30%, #ffffff 100%);
+}
+
+.App-header {
+  background: white;
+  padding: 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.App-header h1 {
+  margin: 0;
+}
+
+.App-main {
+  width: 100%;
+  padding: 0;
+  min-height: calc(100vh - 200px);
+  box-sizing: border-box;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .App-main {
+    padding: 0;
+  }
+}
+
+@media (max-width: 480px) {
+  .App-main {
+    padding: 0;
+  }
+}
+

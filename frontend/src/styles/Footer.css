@@ -1,0 +1,193 @@
+.footer {
+  background: linear-gradient(135deg, #d1c4e9 0%, #9575cd 100%);
+  color: white;
+  padding: 40px 20px;
+  margin-top: 60px;
+  box-shadow: 0 -4px 12px rgba(149, 117, 205, 0.3);
+}
+
+.footer-container {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.popular-brands-section {
+  margin-bottom: 30px;
+}
+
+.popular-brands-title {
+  font-size: 1.4rem;
+  font-weight: 700;
+  margin-bottom: 25px;
+  text-align: center;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.brands-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 15px;
+  padding: 20px 0;
+}
+
+.brand-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+  transition: all 0.3s ease;
+  backdrop-filter: blur(10px);
+}
+
+.brand-item:hover {
+  background: rgba(255, 255, 255, 0.25);
+  border-color: rgba(255, 255, 255, 0.4);
+  transform: translateY(-5px);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
+}
+
+.brand-icon {
+  font-size: 2rem;
+  display: inline-block;
+}
+
+.brand-name {
+  font-size: 0.95rem;
+  font-weight: 600;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.footer-divider {
+  height: 2px;
+  background: rgba(255, 255, 255, 0.2);
+  margin: 30px 0;
+}
+
+.footer-bottom {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 15px;
+  text-align: center;
+}
+
+.footer-text {
+  font-size: 0.95rem;
+  color: rgba(255, 255, 255, 0.9);
+  margin: 0;
+  line-height: 1.6;
+}
+
+.footer-links {
+  display: flex;
+  gap: 25px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.footer-links a {
+  color: rgba(255, 255, 255, 0.9);
+  text-decoration: none;
+  font-size: 0.9rem;
+  font-weight: 500;
+  transition: all 0.3s ease;
+  border-bottom: 2px solid transparent;
+}
+
+.footer-links a:hover {
+  color: white;
+  border-bottom-color: white;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .footer {
+    padding: 30px 15px;
+    margin-top: 40px;
+  }
+
+  .popular-brands-title {
+    font-size: 1.2rem;
+    margin-bottom: 20px;
+  }
+
+  .brands-grid {
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 12px;
+    padding: 15px 0;
+  }
+
+  .brand-item {
+    padding: 12px;
+  }
+
+  .brand-icon {
+    font-size: 1.8rem;
+  }
+
+  .brand-name {
+    font-size: 0.9rem;
+  }
+
+  .footer-divider {
+    margin: 20px 0;
+  }
+
+  .footer-text {
+    font-size: 0.9rem;
+  }
+
+  .footer-links {
+    gap: 15px;
+  }
+
+  .footer-links a {
+    font-size: 0.85rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .footer {
+    padding: 20px 10px;
+    margin-top: 30px;
+  }
+
+  .popular-brands-title {
+    font-size: 1.1rem;
+    margin-bottom: 15px;
+  }
+
+  .brands-grid {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    padding: 10px 0;
+  }
+
+  .brand-item {
+    padding: 10px;
+  }
+
+  .brand-icon {
+    font-size: 1.5rem;
+  }
+
+  .brand-name {
+    font-size: 0.8rem;
+  }
+
+  .footer-links {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .footer-text {
+    font-size: 0.85rem;
+  }
+}
