@@ -1,3 +1,7 @@
+﻿/**
+ * Order Routes
+ * Defines checkout, pricing, order history, rider assignment, and delivery progression endpoints.
+ */
 const express = require("express");
 const router = express.Router();
 const orderController = require("../controllers/orderController");
@@ -9,6 +13,13 @@ router.post(
   verifyToken,
   authorizeRole(["user"]),
   orderController.checkout,
+);
+
+router.post(
+  "/pricing",
+  verifyToken,
+  authorizeRole(["user"]),
+  orderController.previewCheckoutPricing,
 );
 
 router.get(
@@ -50,4 +61,5 @@ router.post(
 );
 
 module.exports = router;
+
 

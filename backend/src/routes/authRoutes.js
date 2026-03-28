@@ -1,3 +1,7 @@
+﻿/**
+ * Auth Routes
+ * Defines public/protected authentication endpoints and token verification routes.
+ */
 const express = require("express");
 const router = express.Router();
 const authController = require("../controllers/authController");
@@ -12,3 +16,5 @@ router.post("/logout", authController.logout);
 router.get("/verify", verifyToken, authController.verifyToken);
 
 module.exports = router;
+
+

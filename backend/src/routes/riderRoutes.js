@@ -1,3 +1,7 @@
+﻿/**
+ * Rider Routes
+ * Defines rider-only endpoints for delivery list and delivery state updates.
+ */
 const express = require("express");
 const router = express.Router();
 const riderController = require("../controllers/riderController");
@@ -11,3 +15,5 @@ router.get("/deliveries", riderOnly, riderController.getDeliveries);
 router.put("/delivery/:id", riderOnly, riderController.updateDeliveryStatus);
 
 module.exports = router;
+
+

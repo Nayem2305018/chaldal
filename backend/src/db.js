@@ -1,5 +1,8 @@
 const { Pool } = require("pg");
-require("dotenv").config();
+const path = require("path");
+require("dotenv").config({
+  path: path.resolve(__dirname, "..", ".env"),
+});
 
 // Create a new pool using credentials from your .env file
 const pool = new Pool({
@@ -26,4 +29,3 @@ module.exports = {
   query: (text, params) => pool.query(text, params),
   connect: () => pool.connect(),
 };
-       

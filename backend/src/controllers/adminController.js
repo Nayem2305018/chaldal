@@ -1,8 +1,215 @@
+﻿/**
+ * Admin Controller
+ * Handles admin dashboards, rider approvals, inventory updates, offers, and order management.
+ */
 const db = require("../db");
 const bcrypt = require("bcrypt");
+const {
+  ensureOfferSchema,
+  normalizeVoucherCode,
+  roundMoney,
+} = require("../utils/offerService");
 
 let paymentConfirmationTableReady = false;
 let warehouseInventorySchemaReady = false;
+
+const OFFER_DISCOUNT_TYPES = ["percentage", "fixed_amount"];
+
+const parseOptionalDate = (value) => {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed;
+};
+
+const buildVoucherPayload = (input, existing = null) => {
+  const source = {
+    code: input.code ?? existing?.code,
+    discount_type: input.discount_type ?? existing?.discount_type,
+    discount_value: input.discount_value ?? existing?.discount_value,
+    min_order_amount: input.min_order_amount ?? existing?.min_order_amount ?? 0,
+    max_discount_amount:
+      input.max_discount_amount ?? existing?.max_discount_amount ?? null,
+    usage_limit_per_user:
+      input.usage_limit_per_user ?? existing?.usage_limit_per_user ?? 1,
+    start_at: input.start_at ?? existing?.start_at ?? null,
+    end_at: input.end_at ?? existing?.end_at ?? null,
+    is_active:
+      input.is_active === undefined
+        ? (existing?.is_active ?? true)
+        : Boolean(input.is_active),
+  };
+
+  const code = normalizeVoucherCode(source.code);
+  if (!code) {
+    return { error: "Voucher code is required" };
+  }
+
+  const discountType = String(source.discount_type || "").trim();
+  if (!OFFER_DISCOUNT_TYPES.includes(discountType)) {
+    return { error: "discount_type must be either percentage or fixed_amount" };
+  }
+
+  const discountValue = Number(source.discount_value);
+  if (!Number.isFinite(discountValue) || discountValue <= 0) {
+    return { error: "discount_value must be a positive number" };
+  }
+
+  if (discountType === "percentage" && discountValue > 100) {
+    return { error: "Percentage voucher discount cannot exceed 100" };
+  }
+
+  const minOrderAmount = Number(source.min_order_amount || 0);
+  if (!Number.isFinite(minOrderAmount) || minOrderAmount < 0) {
+    return { error: "min_order_amount must be zero or a positive number" };
+  }
+
+  const usageLimitPerUser = Number(source.usage_limit_per_user || 0);
+  if (!Number.isInteger(usageLimitPerUser) || usageLimitPerUser <= 0) {
+    return { error: "usage_limit_per_user must be a positive integer" };
+  }
+
+  let maxDiscountAmount = null;
+  if (
+    source.max_discount_amount !== null &&
+    source.max_discount_amount !== undefined &&
+    source.max_discount_amount !== ""
+  ) {
+    maxDiscountAmount = Number(source.max_discount_amount);
+    if (!Number.isFinite(maxDiscountAmount) || maxDiscountAmount <= 0) {
+      return { error: "max_discount_amount must be a positive number" };
+    }
+  }
+
+  const startAt = parseOptionalDate(source.start_at);
+  if (
+    source.start_at !== null &&
+    source.start_at !== undefined &&
+    source.start_at !== "" &&
+    !startAt
+  ) {
+    return { error: "start_at must be a valid datetime" };
+  }
+
+  const endAt = parseOptionalDate(source.end_at);
+  if (
+    source.end_at !== null &&
+    source.end_at !== undefined &&
+    source.end_at !== "" &&
+    !endAt
+  ) {
+    return { error: "end_at must be a valid datetime" };
+  }
+
+  if (startAt && endAt && endAt < startAt) {
+    return { error: "end_at must be greater than or equal to start_at" };
+  }
+
+  return {
+    payload: {
+      code,
+      discount_type: discountType,
+      discount_value: roundMoney(discountValue),
+      min_order_amount: roundMoney(minOrderAmount),
+      max_discount_amount:
+        maxDiscountAmount === null ? null : roundMoney(maxDiscountAmount),
+      usage_limit_per_user: usageLimitPerUser,
+      start_at: startAt,
+      end_at: endAt,
+      is_active: Boolean(source.is_active),
+    },
+  };
+};
+
+const buildProductDiscountPayload = (input, existing = null) => {
+  const source = {
+    product_id: input.product_id ?? existing?.product_id,
+    discount_type: input.discount_type ?? existing?.discount_type,
+    discount_value: input.discount_value ?? existing?.discount_value,
+    max_discount_amount:
+      input.max_discount_amount ?? existing?.max_discount_amount ?? null,
+    start_at: input.start_at ?? existing?.start_at ?? null,
+    end_at: input.end_at ?? existing?.end_at ?? null,
+    is_active:
+      input.is_active === undefined
+        ? (existing?.is_active ?? true)
+        : Boolean(input.is_active),
+  };
+
+  const productId = Number(source.product_id);
+  if (!Number.isInteger(productId) || productId <= 0) {
+    return { error: "product_id must be a positive integer" };
+  }
+
+  const discountType = String(source.discount_type || "").trim();
+  if (!OFFER_DISCOUNT_TYPES.includes(discountType)) {
+    return { error: "discount_type must be either percentage or fixed_amount" };
+  }
+
+  const discountValue = Number(source.discount_value);
+  if (!Number.isFinite(discountValue) || discountValue <= 0) {
+    return { error: "discount_value must be a positive number" };
+  }
+
+  if (discountType === "percentage" && discountValue > 100) {
+    return { error: "Percentage product discount cannot exceed 100" };
+  }
+
+  let maxDiscountAmount = null;
+  if (
+    source.max_discount_amount !== null &&
+    source.max_discount_amount !== undefined &&
+    source.max_discount_amount !== ""
+  ) {
+    maxDiscountAmount = Number(source.max_discount_amount);
+    if (!Number.isFinite(maxDiscountAmount) || maxDiscountAmount <= 0) {
+      return { error: "max_discount_amount must be a positive number" };
+    }
+  }
+
+  const startAt = parseOptionalDate(source.start_at);
+  if (
+    source.start_at !== null &&
+    source.start_at !== undefined &&
+    source.start_at !== "" &&
+    !startAt
+  ) {
+    return { error: "start_at must be a valid datetime" };
+  }
+
+  const endAt = parseOptionalDate(source.end_at);
+  if (
+    source.end_at !== null &&
+    source.end_at !== undefined &&
+    source.end_at !== "" &&
+    !endAt
+  ) {
+    return { error: "end_at must be a valid datetime" };
+  }
+
+  if (startAt && endAt && endAt < startAt) {
+    return { error: "end_at must be greater than or equal to start_at" };
+  }
+
+  return {
+    payload: {
+      product_id: productId,
+      discount_type: discountType,
+      discount_value: roundMoney(discountValue),
+      max_discount_amount:
+        maxDiscountAmount === null ? null : roundMoney(maxDiscountAmount),
+      start_at: startAt,
+      end_at: endAt,
+      is_active: Boolean(source.is_active),
+    },
+  };
+};
 
 const ensurePaymentConfirmationTable = async () => {
   if (paymentConfirmationTableReady) {
@@ -677,25 +884,473 @@ exports.assignRider = async (req, res) => {
   }
 };
 
-// Vouchers Management
-exports.createVoucher = async (req, res) => {
+// Offer and Discount Management
+exports.createVoucherOffer = async (req, res) => {
   try {
-    const { code, discount_amount, expiry_date, is_active } = req.body;
-    const maxId = await db.query(
-      "SELECT COALESCE(MAX(voucher_id), 0) + 1 AS next_id FROM voucher",
+    await ensureOfferSchema(db);
+
+    const { payload, error } = buildVoucherPayload(req.body);
+    if (error) {
+      return res.status(400).json({ error });
+    }
+
+    const duplicateRes = await db.query(
+      "SELECT voucher_id FROM vouchers WHERE UPPER(code) = UPPER($1)",
+      [payload.code],
     );
-    await db.query(
-      "INSERT INTO voucher (voucher_id, code, discount_amount, expiry_date, is_active) VALUES ($1, $2, $3, $4, $5)",
-      [
-        maxId.rows[0].next_id,
+
+    if (duplicateRes.rows.length > 0) {
+      return res.status(409).json({ error: "Voucher code already exists" });
+    }
+
+    const maxIdRes = await db.query(
+      "SELECT COALESCE(MAX(voucher_id), 0) + 1 AS next_id FROM vouchers",
+    );
+    const voucherId = Number(maxIdRes.rows[0].next_id);
+
+    const insertRes = await db.query(
+      `
+      INSERT INTO vouchers (
+        voucher_id,
         code,
-        discount_amount,
-        expiry_date || null,
-        is_active !== false,
+        discount_type,
+        discount_value,
+        min_order_amount,
+        max_discount_amount,
+        usage_limit_per_user,
+        start_at,
+        end_at,
+        is_active,
+        created_by_admin,
+        created_at,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
+      RETURNING *
+      `,
+      [
+        voucherId,
+        payload.code,
+        payload.discount_type,
+        payload.discount_value,
+        payload.min_order_amount,
+        payload.max_discount_amount,
+        payload.usage_limit_per_user,
+        payload.start_at,
+        payload.end_at,
+        payload.is_active,
+        req.user.id,
       ],
     );
-    res.json({ message: "Voucher generated securely" });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to construct voucher natively" });
+
+    return res.status(201).json({
+      message: "Voucher created successfully",
+      voucher: insertRes.rows[0],
+    });
+  } catch (error) {
+    console.error("Create voucher offer error:", error);
+    return res.status(500).json({ error: "Failed to create voucher" });
   }
 };
+
+exports.getVoucherOffers = async (req, res) => {
+  try {
+    await ensureOfferSchema(db);
+
+    const result = await db.query(`
+      SELECT
+        v.*,
+        COALESCE(COUNT(vuh.usage_id), 0)::INT AS usage_count_total,
+        CASE
+          WHEN v.is_active = FALSE THEN FALSE
+          WHEN v.start_at IS NOT NULL AND v.start_at > NOW() THEN FALSE
+          WHEN v.end_at IS NOT NULL AND v.end_at < NOW() THEN FALSE
+          ELSE TRUE
+        END AS currently_applicable
+      FROM vouchers v
+      LEFT JOIN voucher_usage_history vuh ON vuh.voucher_id = v.voucher_id
+      GROUP BY v.voucher_id
+      ORDER BY v.created_at DESC, v.voucher_id DESC
+    `);
+
+    return res.json({ vouchers: result.rows });
+  } catch (error) {
+    console.error("Get voucher offers error:", error);
+    return res.status(500).json({ error: "Failed to fetch vouchers" });
+  }
+};
+
+exports.updateVoucherOffer = async (req, res) => {
+  try {
+    await ensureOfferSchema(db);
+
+    const voucherId = Number(req.params.voucher_id);
+    if (!Number.isInteger(voucherId) || voucherId <= 0) {
+      return res.status(400).json({ error: "Invalid voucher_id" });
+    }
+
+    const existingRes = await db.query(
+      "SELECT * FROM vouchers WHERE voucher_id = $1",
+      [voucherId],
+    );
+
+    if (existingRes.rows.length === 0) {
+      return res.status(404).json({ error: "Voucher not found" });
+    }
+
+    const { payload, error } = buildVoucherPayload(
+      req.body,
+      existingRes.rows[0],
+    );
+    if (error) {
+      return res.status(400).json({ error });
+    }
+
+    const duplicateRes = await db.query(
+      "SELECT voucher_id FROM vouchers WHERE UPPER(code) = UPPER($1) AND voucher_id <> $2",
+      [payload.code, voucherId],
+    );
+
+    if (duplicateRes.rows.length > 0) {
+      return res.status(409).json({ error: "Voucher code already exists" });
+    }
+
+    const updateRes = await db.query(
+      `
+      UPDATE vouchers
+      SET
+        code = $1,
+        discount_type = $2,
+        discount_value = $3,
+        min_order_amount = $4,
+        max_discount_amount = $5,
+        usage_limit_per_user = $6,
+        start_at = $7,
+        end_at = $8,
+        is_active = $9,
+        updated_at = NOW()
+      WHERE voucher_id = $10
+      RETURNING *
+      `,
+      [
+        payload.code,
+        payload.discount_type,
+        payload.discount_value,
+        payload.min_order_amount,
+        payload.max_discount_amount,
+        payload.usage_limit_per_user,
+        payload.start_at,
+        payload.end_at,
+        payload.is_active,
+        voucherId,
+      ],
+    );
+
+    return res.json({
+      message: "Voucher updated successfully",
+      voucher: updateRes.rows[0],
+    });
+  } catch (error) {
+    console.error("Update voucher offer error:", error);
+    return res.status(500).json({ error: "Failed to update voucher" });
+  }
+};
+
+exports.setVoucherOfferActive = async (req, res) => {
+  try {
+    await ensureOfferSchema(db);
+
+    const voucherId = Number(req.params.voucher_id);
+    const isActive = req.body?.is_active;
+
+    if (!Number.isInteger(voucherId) || voucherId <= 0) {
+      return res.status(400).json({ error: "Invalid voucher_id" });
+    }
+
+    if (typeof isActive !== "boolean") {
+      return res.status(400).json({ error: "is_active must be true or false" });
+    }
+
+    const updateRes = await db.query(
+      `
+      UPDATE vouchers
+      SET is_active = $1,
+          updated_at = NOW()
+      WHERE voucher_id = $2
+      RETURNING *
+      `,
+      [isActive, voucherId],
+    );
+
+    if (updateRes.rows.length === 0) {
+      return res.status(404).json({ error: "Voucher not found" });
+    }
+
+    return res.json({
+      message: `Voucher ${isActive ? "activated" : "deactivated"} successfully`,
+      voucher: updateRes.rows[0],
+    });
+  } catch (error) {
+    console.error("Set voucher active error:", error);
+    return res
+      .status(500)
+      .json({ error: "Failed to update voucher activation" });
+  }
+};
+
+exports.getVoucherUsageHistory = async (req, res) => {
+  try {
+    await ensureOfferSchema(db);
+
+    const voucherId = req.query.voucher_id
+      ? Number(req.query.voucher_id)
+      : null;
+    const limit = Math.min(Math.max(Number(req.query.limit || 100), 1), 500);
+
+    if (
+      voucherId !== null &&
+      (!Number.isInteger(voucherId) || voucherId <= 0)
+    ) {
+      return res
+        .status(400)
+        .json({ error: "voucher_id must be a positive integer" });
+    }
+
+    const result = await db.query(
+      `
+      SELECT
+        vuh.usage_id,
+        vuh.voucher_id,
+        vuh.voucher_code,
+        vuh.user_id,
+        u.name AS user_name,
+        u.email AS user_email,
+        vuh.order_id,
+        o.order_date,
+        vuh.discount_amount,
+        vuh.used_at
+      FROM voucher_usage_history vuh
+      JOIN users u ON u.user_id = vuh.user_id
+      JOIN orders o ON o.order_id = vuh.order_id
+      WHERE ($1::INT IS NULL OR vuh.voucher_id = $1)
+      ORDER BY vuh.used_at DESC, vuh.usage_id DESC
+      LIMIT $2
+      `,
+      [voucherId, limit],
+    );
+
+    return res.json({ usage_history: result.rows });
+  } catch (error) {
+    console.error("Get voucher usage history error:", error);
+    return res
+      .status(500)
+      .json({ error: "Failed to fetch voucher usage history" });
+  }
+};
+
+exports.createProductDiscountOffer = async (req, res) => {
+  try {
+    await ensureOfferSchema(db);
+
+    const { payload, error } = buildProductDiscountPayload(req.body);
+    if (error) {
+      return res.status(400).json({ error });
+    }
+
+    const productRes = await db.query(
+      "SELECT product_id FROM product WHERE product_id = $1",
+      [payload.product_id],
+    );
+
+    if (productRes.rows.length === 0) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    const maxIdRes = await db.query(
+      "SELECT COALESCE(MAX(product_discount_id), 0) + 1 AS next_id FROM product_discounts",
+    );
+    const productDiscountId = Number(maxIdRes.rows[0].next_id);
+
+    const insertRes = await db.query(
+      `
+      INSERT INTO product_discounts (
+        product_discount_id,
+        product_id,
+        discount_type,
+        discount_value,
+        max_discount_amount,
+        start_at,
+        end_at,
+        is_active,
+        created_by_admin,
+        created_at,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+      RETURNING *
+      `,
+      [
+        productDiscountId,
+        payload.product_id,
+        payload.discount_type,
+        payload.discount_value,
+        payload.max_discount_amount,
+        payload.start_at,
+        payload.end_at,
+        payload.is_active,
+        req.user.id,
+      ],
+    );
+
+    return res.status(201).json({
+      message: "Product discount created successfully",
+      discount: insertRes.rows[0],
+    });
+  } catch (error) {
+    console.error("Create product discount error:", error);
+    return res.status(500).json({ error: "Failed to create product discount" });
+  }
+};
+
+exports.getProductDiscountOffers = async (req, res) => {
+  try {
+    await ensureOfferSchema(db);
+
+    const result = await db.query(`
+      SELECT
+        pd.*,
+        p.product_name,
+        CASE
+          WHEN pd.is_active = FALSE THEN FALSE
+          WHEN pd.start_at IS NOT NULL AND pd.start_at > NOW() THEN FALSE
+          WHEN pd.end_at IS NOT NULL AND pd.end_at < NOW() THEN FALSE
+          ELSE TRUE
+        END AS currently_applicable
+      FROM product_discounts pd
+      JOIN product p ON p.product_id = pd.product_id
+      ORDER BY pd.created_at DESC, pd.product_discount_id DESC
+    `);
+
+    return res.json({ discounts: result.rows });
+  } catch (error) {
+    console.error("Get product discounts error:", error);
+    return res.status(500).json({ error: "Failed to fetch product discounts" });
+  }
+};
+
+exports.updateProductDiscountOffer = async (req, res) => {
+  try {
+    await ensureOfferSchema(db);
+
+    const productDiscountId = Number(req.params.product_discount_id);
+    if (!Number.isInteger(productDiscountId) || productDiscountId <= 0) {
+      return res.status(400).json({ error: "Invalid product_discount_id" });
+    }
+
+    const existingRes = await db.query(
+      "SELECT * FROM product_discounts WHERE product_discount_id = $1",
+      [productDiscountId],
+    );
+
+    if (existingRes.rows.length === 0) {
+      return res.status(404).json({ error: "Product discount not found" });
+    }
+
+    const { payload, error } = buildProductDiscountPayload(
+      req.body,
+      existingRes.rows[0],
+    );
+    if (error) {
+      return res.status(400).json({ error });
+    }
+
+    const productRes = await db.query(
+      "SELECT product_id FROM product WHERE product_id = $1",
+      [payload.product_id],
+    );
+
+    if (productRes.rows.length === 0) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    const updateRes = await db.query(
+      `
+      UPDATE product_discounts
+      SET
+        product_id = $1,
+        discount_type = $2,
+        discount_value = $3,
+        max_discount_amount = $4,
+        start_at = $5,
+        end_at = $6,
+        is_active = $7,
+        updated_at = NOW()
+      WHERE product_discount_id = $8
+      RETURNING *
+      `,
+      [
+        payload.product_id,
+        payload.discount_type,
+        payload.discount_value,
+        payload.max_discount_amount,
+        payload.start_at,
+        payload.end_at,
+        payload.is_active,
+        productDiscountId,
+      ],
+    );
+
+    return res.json({
+      message: "Product discount updated successfully",
+      discount: updateRes.rows[0],
+    });
+  } catch (error) {
+    console.error("Update product discount error:", error);
+    return res.status(500).json({ error: "Failed to update product discount" });
+  }
+};
+
+exports.setProductDiscountOfferActive = async (req, res) => {
+  try {
+    await ensureOfferSchema(db);
+
+    const productDiscountId = Number(req.params.product_discount_id);
+    const isActive = req.body?.is_active;
+
+    if (!Number.isInteger(productDiscountId) || productDiscountId <= 0) {
+      return res.status(400).json({ error: "Invalid product_discount_id" });
+    }
+
+    if (typeof isActive !== "boolean") {
+      return res.status(400).json({ error: "is_active must be true or false" });
+    }
+
+    const updateRes = await db.query(
+      `
+      UPDATE product_discounts
+      SET is_active = $1,
+          updated_at = NOW()
+      WHERE product_discount_id = $2
+      RETURNING *
+      `,
+      [isActive, productDiscountId],
+    );
+
+    if (updateRes.rows.length === 0) {
+      return res.status(404).json({ error: "Product discount not found" });
+    }
+
+    return res.json({
+      message: `Product discount ${isActive ? "activated" : "deactivated"} successfully`,
+      discount: updateRes.rows[0],
+    });
+  } catch (error) {
+    console.error("Set product discount active error:", error);
+    return res
+      .status(500)
+      .json({ error: "Failed to update product discount activation" });
+  }
+};
+
+// Backward-compatible alias used by existing frontend calls.
+exports.createVoucher = exports.createVoucherOffer;

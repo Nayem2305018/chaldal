@@ -1,3 +1,7 @@
+﻿/**
+ * Category Controller
+ * Serves category listing and category-related catalog data.
+ */
 const db = require("../db");
 
 
@@ -34,3 +38,5 @@ exports.deleteCategory = async (req, res) => {
     res.json({ message: "Category deleted successfully" });
   } catch (err) { res.status(500).json({ error: "Failed to delete category" }); }
 };
+
+

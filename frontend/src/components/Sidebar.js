@@ -1,27 +1,104 @@
-import React, { useState, useEffect } from "react";
-import { fetchCategories } from "../services/api";
+/**
+ * Sidebar Component
+ * Fetches categories and active product offers, then renders homepage filters and offer highlights.
+ */
+import React, { useState, useEffect, useCallback } from "react";
+import {
+  fetchActiveProductOffers,
+  fetchCategories,
+  fetchProducts,
+} from "../services/api";
 import "../styles/Sidebar.css";
+
+const TAKA_SYMBOL = "\u09F3";
 
 function Sidebar({ onCategorySelect }) {
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState(null);
+  const [activeOffers, setActiveOffers] = useState([]);
+  const [offersLoading, setOffersLoading] = useState(true);
 
-  useEffect(() => {
-    loadCategories();
-  }, []);
-
-  const loadCategories = async () => {
+  const loadSidebarData = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await fetchCategories();
-      setCategories(data);
+      setOffersLoading(true);
+
+      const [categoryData, offersData] = await Promise.all([
+        fetchCategories(),
+        fetchActiveProductOffers(6).catch(() => []),
+      ]);
+
+      setCategories(categoryData);
+
+      const rawOfferProducts =
+        Array.isArray(offersData) && offersData.length > 0
+          ? offersData
+          : await fetchProducts();
+
+      const discountedOffers = (
+        Array.isArray(rawOfferProducts) ? rawOfferProducts : []
+      )
+        .filter((product) => {
+          const basePrice = Number(product.price || 0);
+          const discountedPrice = Number(
+            product.discounted_price !== undefined &&
+              product.discounted_price !== null
+              ? product.discounted_price
+              : basePrice,
+          );
+          const discountAmount = Number(product.product_discount_amount || 0);
+
+          return (
+            discountAmount > 0 ||
+            discountedPrice < basePrice ||
+            Boolean(product.active_discount_type)
+          );
+        })
+        .sort(
+          (a, b) =>
+            Number(b.product_discount_amount || 0) -
+            Number(a.product_discount_amount || 0),
+        )
+        .slice(0, 4)
+        .map((product) => {
+          const basePrice = Number(product.price || 0);
+          const discountedPrice = Number(
+            product.discounted_price !== undefined &&
+              product.discounted_price !== null
+              ? product.discounted_price
+              : basePrice,
+          );
+          const discountType = product.active_discount_type;
+          const discountValue = Number(product.active_discount_value || 0);
+          const discountAmount = Number(product.product_discount_amount || 0);
+
+          const offerBadge =
+            discountType === "percentage"
+              ? `${Math.round(discountValue)}% OFF`
+              : `SAVE BDT ${Math.round(discountAmount || basePrice - discountedPrice)}`;
+
+          return {
+            productId: product.product_id,
+            name: product.product_name,
+            badge: offerBadge,
+            basePrice,
+            discountedPrice,
+          };
+        });
+
+      setActiveOffers(discountedOffers);
     } catch (err) {
-      console.error("Failed to load categories:", err);
+      console.error("Failed to load sidebar data:", err);
     } finally {
       setLoading(false);
+      setOffersLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    loadSidebarData();
+  }, [loadSidebarData]);
 
   const handleCategoryClick = (categoryId, categoryName) => {
     setSelectedCategory(categoryId);
@@ -30,32 +107,39 @@ function Sidebar({ onCategorySelect }) {
 
   return (
     <aside className="sidebar">
-      {/* Offers Section */}
       <div className="sidebar-section">
-        <h3 className="sidebar-title">🎉 Special Offers</h3>
-        <div className="offers-list">
-          <div className="offer-item">
-            <span className="offer-badge">50% OFF</span>
-            <p>Fresh Vegetables</p>
+        <h3 className="sidebar-title">Special Offers</h3>
+        {offersLoading ? (
+          <p className="loading-text">Loading active offers...</p>
+        ) : activeOffers.length > 0 ? (
+          <div className="offers-list">
+            {activeOffers.map((offer) => (
+              <div key={offer.productId} className="offer-item">
+                <div className="offer-item-main">
+                  <span className="offer-badge">{offer.badge}</span>
+                  <p className="offer-name">{offer.name}</p>
+                </div>
+                <div className="offer-prices">
+                  {offer.discountedPrice < offer.basePrice && (
+                    <span className="offer-price-old">
+                      {TAKA_SYMBOL} {offer.basePrice.toFixed(2)}
+                    </span>
+                  )}
+                  <span className="offer-price-new">
+                    {TAKA_SYMBOL} {offer.discountedPrice.toFixed(2)}
+                  </span>
+                </div>
+              </div>
+            ))}
           </div>
-          <div className="offer-item">
-            <span className="offer-badge">30% OFF</span>
-            <p>Dairy Products</p>
-          </div>
-          <div className="offer-item">
-            <span className="offer-badge">25% OFF</span>
-            <p>Fruits</p>
-          </div>
-          <div className="offer-item">
-            <span className="offer-badge">20% OFF</span>
-            <p>Grocery Items</p>
-          </div>
-        </div>
+        ) : (
+          <p className="no-data-text">No active offers right now.</p>
+        )}
       </div>
 
       {/* Categories Section */}
       <div className="sidebar-section">
-        <h3 className="sidebar-title">📂 Categories</h3>
+        <h3 className="sidebar-title">Categories</h3>
         {loading ? (
           <p className="loading-text">Loading categories...</p>
         ) : categories.length > 0 ? (
@@ -89,25 +173,6 @@ function Sidebar({ onCategorySelect }) {
         ) : (
           <p className="no-data-text">No categories found</p>
         )}
-      </div>
-
-      {/* Discounts Section */}
-      <div className="sidebar-section">
-        <h3 className="sidebar-title">💰 Discounts</h3>
-        <div className="discount-list">
-          <div className="discount-item">
-            <p>Weekly Deals</p>
-            <span className="discount-badge">Save More</span>
-          </div>
-          <div className="discount-item">
-            <p>Bulk Orders</p>
-            <span className="discount-badge">Extra 10%</span>
-          </div>
-          <div className="discount-item">
-            <p>Member Rewards</p>
-            <span className="discount-badge">Active</span>
-          </div>
-        </div>
       </div>
     </aside>
   );

@@ -1,3 +1,7 @@
+/**
+ * ProductList Component
+ * Maps fetched product arrays into product cards for catalog and dashboard product views.
+ */
 import React from "react";
 import ProductCard from "./ProductCard";
 import "../styles/List.css";
@@ -15,3 +19,5 @@ function ProductList({ products }) {
 }
 
 export default ProductList;
+
+

@@ -1,3 +1,7 @@
+﻿/**
+ * Cart Controller
+ * Handles cart retrieval, add/remove item operations, and cart quantity/price updates.
+ */
 const db = require("../db");
 
 let cartPricingColumnsReady = false;
@@ -298,3 +302,5 @@ exports.updateCartItem = async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 };
+
+

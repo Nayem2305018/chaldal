@@ -1,3 +1,7 @@
+﻿/**
+ * Rider Controller
+ * Handles rider-specific delivery queries and rider delivery status updates.
+ */
 const db = require("../db");
 
 // exports.getDeliveries = async (req, res) => {
@@ -86,7 +90,7 @@ exports.updateDeliveryStatus = async (req, res) => {
       [status, id]
     );
 
-    // ALSO update order status (IMPORTANT 🔥)
+    // ALSO update order status (IMPORTANT ðŸ”¥)
     if (status === "delivering") {
       await db.query(
         "UPDATE orders SET order_status = 'delivering' WHERE order_id = (SELECT order_id FROM delivery WHERE delivery_id = $1)",
@@ -121,3 +125,5 @@ exports.updateDeliveryStatus = async (req, res) => {
     res.status(500).json({ error: "Failed to update delivery" });
   }
 };
+
+

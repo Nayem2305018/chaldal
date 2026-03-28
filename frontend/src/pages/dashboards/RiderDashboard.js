@@ -8,7 +8,7 @@ const RiderDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [warehouseSelections, setWarehouseSelections] = useState({});
   const [paymentNotes, setPaymentNotes] = useState({});
-  const [activeSection, setActiveSection] = useState("none");
+  const [activeSection, setActiveSection] = useState("dashboard");
   const location = useLocation();
   const userString = localStorage.getItem("auth_user");
   const rider = userString ? JSON.parse(userString) : null;
@@ -39,13 +39,12 @@ const RiderDashboard = () => {
       return;
     }
 
-    if (location.hash === "#delivery-history") {
-      setActiveSection("history");
-      return;
-    }
-
-    setActiveSection("none");
+    setActiveSection("dashboard");
   }, [location.hash]);
+
+  const activeDeliveries = myDeliveries.filter(
+    (delivery) => delivery.delivery_status !== "delivered",
+  );
 
   const handleUpdateStatus = async (orderId, newStatus) => {
     try {
@@ -58,11 +57,24 @@ const RiderDashboard = () => {
           return;
         }
 
-        await api.patch(`/order/complete-delivery/${orderId}`, {
-          payment_confirmation_message: note.trim(),
-        });
+        const response = await api.patch(
+          `/order/complete-delivery/${orderId}`,
+          {
+            payment_confirmation_message: note.trim(),
+          },
+        );
+
+        if (response?.data?.email_sent) {
+          alert("Delivery completed. Receipt email sent to user successfully.");
+        } else {
+          const reason = response?.data?.email_status?.reason || "unknown";
+          alert(
+            `Delivery completed, but user email could not be sent (${reason}). Please check backend mail configuration.`,
+          );
+        }
       } else {
         await api.patch(`/order/start-delivery/${orderId}`);
+        alert("Delivery started.");
       }
 
       setPaymentNotes((prev) => ({ ...prev, [orderId]: "" }));
@@ -155,17 +167,17 @@ const RiderDashboard = () => {
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "50px" }}>
           {/* Active Deliveries */}
-          {activeSection === "history" && (
-            <section id="delivery-history">
+          {activeSection !== "profile" && (
+            <section>
               <h3
                 style={{
                   borderBottom: "2px solid #eee",
                   paddingBottom: "10px",
                 }}
               >
-                My Assigned Deliveries 📦
+                My Active Delivery Actions 📦
               </h3>
-              {myDeliveries.length === 0 ? (
+              {activeDeliveries.length === 0 ? (
                 <div
                   style={{
                     padding: "30px",
@@ -175,7 +187,7 @@ const RiderDashboard = () => {
                     textAlign: "center",
                   }}
                 >
-                  You have no active or completed deliveries.
+                  You have no active deliveries right now.
                 </div>
               ) : (
                 <div
@@ -185,7 +197,7 @@ const RiderDashboard = () => {
                     gridTemplateColumns: "repeat(auto-fit, minmax(350px, 1fr))",
                   }}
                 >
-                  {myDeliveries.map((d) => (
+                  {activeDeliveries.map((d) => (
                     <div
                       key={d.delivery_id}
                       style={{

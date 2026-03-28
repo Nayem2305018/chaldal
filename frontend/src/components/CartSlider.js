@@ -1,6 +1,14 @@
+/**
+ * CartSlider Component
+ * Displays live cart contents, per-item totals, and cart actions before checkout.
+ */
 import React, { useEffect } from "react";
 import { useCart } from "../context/CartContext";
 import { useNavigate } from "react-router-dom";
+
+const CART_ICON = "\u{1F6D2}";
+const CLOSE_ICON = "\u00D7";
+const TAKA_SYMBOL = "\u09F3";
 
 const CartSlider = () => {
   const { cart, isOpen, setIsOpen, changeQuantity, totalPrice, totalItems } =
@@ -62,7 +70,7 @@ const CartSlider = () => {
           }}
         >
           <h2 style={{ margin: 0, fontSize: "1.2rem" }}>
-            🛒 Your Bag ({totalItems})
+            {CART_ICON} Your Bag ({totalItems})
           </h2>
           <button
             onClick={() => setIsOpen(false)}
@@ -74,7 +82,7 @@ const CartSlider = () => {
               cursor: "pointer",
             }}
           >
-            ×
+            {CLOSE_ICON}
           </button>
         </div>
 
@@ -100,8 +108,7 @@ const CartSlider = () => {
               >
                 <div style={{ flex: 1 }}>
                   <p style={{ margin: "0 0 10px 0", fontWeight: "bold" }}>
-                    Product ID: {item.product_id}{" "}
-                    {item.product_name && `(${item.product_name})`}
+                    {item.product_name || "Selected Product"}
                   </p>
                   <div
                     style={{
@@ -147,7 +154,7 @@ const CartSlider = () => {
                   <p
                     style={{ margin: 0, fontWeight: "bold", color: "#e74c3c" }}
                   >
-                    ৳{" "}
+                    {TAKA_SYMBOL}{" "}
                     {Number(
                       item.line_total ?? Number(item.price) * item.quantity,
                     ).toFixed(2)}
@@ -176,7 +183,9 @@ const CartSlider = () => {
               }}
             >
               <strong>Total:</strong>
-              <strong style={{ color: "#e74c3c" }}>৳ {totalPrice}</strong>
+              <strong style={{ color: "#e74c3c" }}>
+                {TAKA_SYMBOL} {totalPrice}
+              </strong>
             </div>
             <button
               onClick={() => {

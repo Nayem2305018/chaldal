@@ -1,3 +1,7 @@
+﻿/**
+ * User Controller
+ * Handles user-profile related API responses and user data operations.
+ */
 const db = require("../db");
 
 exports.getProfile = async (req, res) => {
@@ -48,3 +52,5 @@ exports.updateProfile = async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 };
+
+

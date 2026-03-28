@@ -1,9 +1,16 @@
+/**
+ * Navigation Component
+ * Renders global top navigation, profile menu actions, and role-aware quick navigation.
+ */
 import React, { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import api from "../services/api";
 import SearchBar from "./SearchBar";
 import { useCart } from "../context/CartContext";
 import "../styles/Navigation.css";
+
+const CART_ICON = "\u{1F6D2}";
+const DROPDOWN_ICON = "\u25BE";
 
 const Navigation = ({ onSearch }) => {
   const navigate = useNavigate();
@@ -14,6 +21,12 @@ const Navigation = ({ onSearch }) => {
   const userString = localStorage.getItem("auth_user");
   const user = userString ? JSON.parse(userString) : null;
   const role = localStorage.getItem("auth_role");
+  const logoTarget =
+    role === "admin"
+      ? "/admin/dashboard"
+      : role === "rider"
+        ? "/rider/dashboard"
+        : "/";
   const showCartButton = role !== "admin" && role !== "rider";
 
   useEffect(() => {
@@ -41,20 +54,28 @@ const Navigation = ({ onSearch }) => {
     localStorage.removeItem("auth_role");
     setIsOpen(false);
     setMenuOpen(false);
-    navigate("/");
+    navigate("/", { replace: true });
     window.location.reload(); // Quick sync flush mapping entire cookie state safely downstream.
   };
 
   const navigateToSection = (path, hash) => {
     setMenuOpen(false);
-    navigate({ pathname: path, hash });
+    if (hash) {
+      navigate({ pathname: path, hash });
+      return;
+    }
+
+    navigate(path);
   };
 
   return (
     <nav className="navbar">
       <div className="nav-container">
-        <Link to="/" className="nav-logo">
-          🛒 Chaldal
+        <Link to={logoTarget} className="nav-logo">
+          <span className="nav-logo-icon" aria-hidden="true">
+            {CART_ICON}
+          </span>
+          <span className="nav-logo-text">Chaldal</span>
         </Link>
 
         <SearchBar onSearch={onSearch} />
@@ -84,7 +105,7 @@ const Navigation = ({ onSearch }) => {
                 transition: "all 0.2s",
               }}
             >
-              🛒{" "}
+              {CART_ICON}{" "}
               <span
                 style={{
                   background: "#e74c3c",
@@ -106,7 +127,8 @@ const Navigation = ({ onSearch }) => {
                   className="profile-menu-trigger"
                   onClick={() => setMenuOpen((prev) => !prev)}
                 >
-                  {(user.name || user.rider_name || "User").split(" ")[0]} ▾
+                  {(user.name || user.rider_name || "User").split(" ")[0]}{" "}
+                  {DROPDOWN_ICON}
                 </button>
 
                 {menuOpen && (
@@ -132,10 +154,7 @@ const Navigation = ({ onSearch }) => {
                           type="button"
                           className="profile-menu-item"
                           onClick={() =>
-                            navigateToSection(
-                              "/user/dashboard",
-                              "#order-history",
-                            )
+                            navigateToSection("/user/order-history", "")
                           }
                         >
                           Order History
@@ -158,10 +177,7 @@ const Navigation = ({ onSearch }) => {
                           type="button"
                           className="profile-menu-item"
                           onClick={() =>
-                            navigateToSection(
-                              "/rider/dashboard",
-                              "#delivery-history",
-                            )
+                            navigateToSection("/rider/delivery-history", "")
                           }
                         >
                           Delivery History

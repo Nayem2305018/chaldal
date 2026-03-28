@@ -1,3 +1,7 @@
+﻿/**
+ * Admin Routes
+ * Defines admin-only endpoints for riders, users, inventory, offers, and order controls.
+ */
 const express = require("express");
 const router = express.Router();
 const adminController = require("../controllers/adminController");
@@ -45,6 +49,11 @@ router.put(
   adminController.updateInventoryStock,
 );
 
+// Product Management
+router.post("/product", adminOnly, adminController.createProduct);
+router.put("/product/:id", adminOnly, adminController.updateProduct);
+router.delete("/product/:id", adminOnly, adminController.deleteProduct);
+
 // Orders Management
 router.get("/orders", adminOnly, adminController.getOrders);
 router.put("/order/:id", adminOnly, adminController.updateOrder);
@@ -54,4 +63,48 @@ router.post(
   adminController.confirmPayment,
 );
 
+// Offer and Discount Management
+router.post("/voucher", adminOnly, adminController.createVoucherOffer);
+
+router.get("/offers/vouchers", adminOnly, adminController.getVoucherOffers);
+router.post("/offers/vouchers", adminOnly, adminController.createVoucherOffer);
+router.put(
+  "/offers/vouchers/:voucher_id",
+  adminOnly,
+  adminController.updateVoucherOffer,
+);
+router.patch(
+  "/offers/vouchers/:voucher_id/active",
+  adminOnly,
+  adminController.setVoucherOfferActive,
+);
+router.get(
+  "/offers/voucher-usage",
+  adminOnly,
+  adminController.getVoucherUsageHistory,
+);
+
+router.get(
+  "/offers/product-discounts",
+  adminOnly,
+  adminController.getProductDiscountOffers,
+);
+router.post(
+  "/offers/product-discounts",
+  adminOnly,
+  adminController.createProductDiscountOffer,
+);
+router.put(
+  "/offers/product-discounts/:product_discount_id",
+  adminOnly,
+  adminController.updateProductDiscountOffer,
+);
+router.patch(
+  "/offers/product-discounts/:product_discount_id/active",
+  adminOnly,
+  adminController.setProductDiscountOfferActive,
+);
+
 module.exports = router;
+
+

@@ -1,3 +1,7 @@
+﻿/**
+ * User Routes
+ * Defines authenticated user endpoints for profile and user-specific actions.
+ */
 const express = require("express");
 const router = express.Router();
 const userController = require("../controllers/userController");
@@ -13,3 +17,5 @@ router.put("/profile", userOnly, userController.updateProfile);
 router.get("/orders", userOnly, orderController.getMyOrders);
 
 module.exports = router;
+
+

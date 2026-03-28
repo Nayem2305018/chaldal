@@ -1,10 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import {
-  fetchCategories,
-  fetchProducts,
-  fetchProductsByCategory,
-} from "../services/api";
+import { fetchCategories, fetchProductsByCategory } from "../services/api";
 import CategoryList from "../components/CategoryList";
 import ProductList from "../components/ProductList";
 import "../styles/Page.css";

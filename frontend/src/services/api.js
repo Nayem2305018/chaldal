@@ -1,3 +1,7 @@
+/**
+ * Frontend API Service
+ * Central axios client and API wrappers used by pages/components to fetch and mutate backend data.
+ */
 import axios from "axios";
 
 const API_BASE_URL =
@@ -94,6 +98,16 @@ export const fetchProducts = async () => {
   }
 };
 
+export const fetchActiveProductOffers = async (limit = 6) => {
+  try {
+    const response = await api.get(`/products/offers/active?limit=${limit}`);
+    return response.data;
+  } catch (error) {
+    console.error("Error fetching active product offers:", error);
+    throw error;
+  }
+};
+
 // ============ Categories Endpoints ============
 
 export const fetchCategories = async () => {
@@ -149,6 +163,16 @@ export const placeOrder = async (formData) => {
     return response.data;
   } catch (error) {
     console.error("Order error:", error);
+    throw error;
+  }
+};
+
+export const previewOrderPricing = async (payload = {}) => {
+  try {
+    const response = await api.post("/order/pricing", payload);
+    return response.data;
+  } catch (error) {
+    console.error("Order pricing preview error:", error);
     throw error;
   }
 };
@@ -227,6 +251,67 @@ export const getAdminDashboardStats = async () => {
     console.error("Error fetching dashboard stats:", error);
     throw error;
   }
+};
+
+export const getVoucherOffers = async () => {
+  const response = await api.get("/admin/offers/vouchers");
+  return response.data;
+};
+
+export const createVoucherOffer = async (payload) => {
+  const response = await api.post("/admin/offers/vouchers", payload);
+  return response.data;
+};
+
+export const updateVoucherOffer = async (voucherId, payload) => {
+  const response = await api.put(
+    `/admin/offers/vouchers/${voucherId}`,
+    payload,
+  );
+  return response.data;
+};
+
+export const setVoucherOfferActive = async (voucherId, isActive) => {
+  const response = await api.patch(
+    `/admin/offers/vouchers/${voucherId}/active`,
+    {
+      is_active: isActive,
+    },
+  );
+  return response.data;
+};
+
+export const getVoucherUsageHistory = async () => {
+  const response = await api.get("/admin/offers/voucher-usage");
+  return response.data;
+};
+
+export const getProductDiscountOffers = async () => {
+  const response = await api.get("/admin/offers/product-discounts");
+  return response.data;
+};
+
+export const createProductDiscountOffer = async (payload) => {
+  const response = await api.post("/admin/offers/product-discounts", payload);
+  return response.data;
+};
+
+export const updateProductDiscountOffer = async (discountId, payload) => {
+  const response = await api.put(
+    `/admin/offers/product-discounts/${discountId}`,
+    payload,
+  );
+  return response.data;
+};
+
+export const setProductDiscountOfferActive = async (discountId, isActive) => {
+  const response = await api.patch(
+    `/admin/offers/product-discounts/${discountId}/active`,
+    {
+      is_active: isActive,
+    },
+  );
+  return response.data;
 };
 
 // ============ Rider Endpoints ============

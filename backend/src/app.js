@@ -1,6 +1,9 @@
 const express = require("express");
 const cors = require("cors");
-require("dotenv").config();
+const path = require("path");
+require("dotenv").config({
+  path: path.resolve(__dirname, "..", ".env"),
+});
 
 const productRoutes = require("./routes/productRoutes");
 const categoryRoutes = require("./routes/categoryRoutes");
@@ -10,6 +13,7 @@ const authRoutes = require("./routes/authRoutes");
 const cartRoutes = require("./routes/cartRoutes");
 const orderRoutes = require("./routes/orderRoutes");
 const riderRoutes = require("./routes/riderRoutes");
+const { isEmailConfigured, getEmailConfig } = require("./utils/emailService");
 const errorHandler = require("./middlewares/errorHandler");
 
 const app = express();
@@ -27,6 +31,13 @@ app.use(express.json());
 if (!process.env.JWT_SECRET) {
   console.warn(
     "⚠️  JWT_SECRET is not set in environment variables. Please set it for production.",
+  );
+}
+
+if (!isEmailConfigured()) {
+  const { missing } = getEmailConfig();
+  console.warn(
+    `⚠️  Email notifications are disabled. Missing mail config keys: ${missing.join(", ")}`,
   );
 }
 

@@ -1,3 +1,7 @@
+﻿/**
+ * useAuthState Hook
+ * Reads, normalizes, and synchronizes frontend authentication state from local storage and API checks.
+ */
 // useAuthState hook removed - authentication has been removed
 
 const useAuthState = () => {
@@ -5,3 +9,5 @@ const useAuthState = () => {
 };
 
 export default useAuthState;
+
+

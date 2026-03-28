@@ -1,3 +1,7 @@
+﻿/**
+ * Cart Routes
+ * Defines user cart endpoints for reading and mutating cart contents.
+ */
 const express = require("express");
 const router = express.Router();
 const cartController = require("../controllers/cartController");
@@ -13,3 +17,5 @@ router.post(
 );
 
 module.exports = router;
+
+

@@ -33,7 +33,7 @@ const LoginPage = () => {
 
       // Redirect based on role
       const redirectPath = response.redirectPath || "/";
-      navigate(redirectPath);
+      navigate(redirectPath, { replace: true });
     } catch (err) {
       setError(err.response?.data?.error || "Invalid login credentials.");
     } finally {

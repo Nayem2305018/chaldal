@@ -1,5 +1,9 @@
 import React, { useState, useEffect } from "react";
-import api, { getRiderRequests, approveRider, rejectRider } from "../../../services/api";
+import {
+  getRiderRequests,
+  approveRider,
+  rejectRider,
+} from "../../../services/api";
 
 const RiderRequests = () => {
   const [requests, setRequests] = useState([]);
@@ -43,14 +47,29 @@ const RiderRequests = () => {
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}
+      >
         <h2 style={{ marginTop: 0 }}>Rider Requests</h2>
       </div>
 
       {loading ? (
         <p>Loading requests...</p>
       ) : requests.length === 0 ? (
-        <div style={{ padding: "40px", background: "#f8f9fa", borderRadius: "8px", border: "1px dashed #d1c4e9", marginTop: "20px", textAlign: "center" }}>
+        <div
+          style={{
+            padding: "40px",
+            background: "#f8f9fa",
+            borderRadius: "8px",
+            border: "1px dashed #d1c4e9",
+            marginTop: "20px",
+            textAlign: "center",
+          }}
+        >
           No pending rider requests.
         </div>
       ) : (
@@ -66,7 +85,7 @@ const RiderRequests = () => {
             </tr>
           </thead>
           <tbody>
-            {requests.map(req => (
+            {requests.map((req) => (
               <tr key={req.request_id}>
                 <td>{req.request_id}</td>
                 <td>{req.name}</td>
@@ -75,8 +94,19 @@ const RiderRequests = () => {
                 <td>{req.appointment_code}</td>
                 <td>
                   <div className="table-actions">
-                    <button onClick={() => handleApprove(req.request_id)} className="btn-edit" style={{background: "#1abc9c"}}>Approve</button>
-                    <button onClick={() => handleReject(req.request_id)} className="btn-delete">Reject</button>
+                    <button
+                      onClick={() => handleApprove(req.request_id)}
+                      className="btn-edit"
+                      style={{ background: "#1abc9c" }}
+                    >
+                      Approve
+                    </button>
+                    <button
+                      onClick={() => handleReject(req.request_id)}
+                      className="btn-delete"
+                    >
+                      Reject
+                    </button>
                   </div>
                 </td>
               </tr>

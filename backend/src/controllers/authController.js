@@ -1,12 +1,10 @@
+﻿/**
+ * Auth Controller
+ * Handles signup, login, token verification, and role-aware authentication flows.
+ */
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const db = require("../db");
-
-// Predefined appointment codes for riders
-const VALID_APPOINTMENT_CODES = {
-  RIDER2024: "admin-created",
-  APP_CODE_001: "admin-created",
-};
 
 const isRecoverableAuthSchemaError = (error) => {
   // 42P01: undefined_table, 42703: undefined_column
@@ -132,15 +130,12 @@ exports.signup = async (req, res) => {
 
     // SIGNUP LOGIC FOR RIDERS
     if (role === "rider") {
-      if (!appointment_code) {
+      const appointmentCode = String(appointment_code || "").trim();
+
+      if (!appointmentCode) {
         return res
           .status(400)
           .json({ error: "Appointment code is required for rider signup" });
-      }
-
-      // Validate appointment code
-      if (!VALID_APPOINTMENT_CODES[appointment_code]) {
-        return res.status(400).json({ error: "Invalid appointment code" });
       }
 
       // Insert into rider_requests (NOT rider table)
@@ -155,7 +150,7 @@ exports.signup = async (req, res) => {
         email,
         password_hash,
         phone,
-        appointment_code,
+        appointmentCode,
       ]);
 
       return res.status(201).json({
@@ -285,3 +280,5 @@ exports.verifyToken = (req, res) => {
     user: req.user,
   });
 };
+
+
