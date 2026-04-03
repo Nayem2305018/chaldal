@@ -1,14 +1,62 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useCart } from "../context/CartContext";
-import { placeOrder, previewOrderPricing } from "../services/api";
+import {
+  fetchOrderRegions,
+  placeOrder,
+  previewOrderPricing,
+  revalidateCartByRegion,
+} from "../services/api";
+import { formatRegionLabel } from "../utils/regionLabel";
 
 const formatMoney = (value) => Number(value || 0).toFixed(2);
+
+const getStoredUserRegionId = () => {
+  try {
+    const raw = localStorage.getItem("auth_user");
+    if (!raw) return "";
+    const parsed = JSON.parse(raw);
+    const numericRegionId = Number(parsed?.region_id);
+    return Number.isInteger(numericRegionId) && numericRegionId > 0
+      ? String(numericRegionId)
+      : "";
+  } catch (_) {
+    return "";
+  }
+};
+
+const persistRegionInAuthUser = (regionId) => {
+  const parsedRegionId = Number(regionId);
+  if (!Number.isInteger(parsedRegionId) || parsedRegionId <= 0) {
+    return;
+  }
+
+  try {
+    const raw = localStorage.getItem("auth_user");
+    if (!raw) return;
+
+    const parsed = JSON.parse(raw);
+    localStorage.setItem(
+      "auth_user",
+      JSON.stringify({
+        ...parsed,
+        region_id: parsedRegionId,
+      }),
+    );
+  } catch (_) {}
+};
 
 const CheckoutPage = () => {
   const { cart, totalPrice, loadCart } = useCart();
   const [formData, setFormData] = useState({
     delivery_address: "",
     preferred_delivery_time: "",
+    region_id: getStoredUserRegionId(),
   });
   const [voucherCodeInput, setVoucherCodeInput] = useState("");
   const [appliedVoucherCode, setAppliedVoucherCode] = useState("");
@@ -18,9 +66,87 @@ const CheckoutPage = () => {
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState("");
+  const [regions, setRegions] = useState([]);
+  const [regionsLoading, setRegionsLoading] = useState(false);
+  const [regionAdjustments, setRegionAdjustments] = useState([]);
+  const [regionSyncing, setRegionSyncing] = useState(false);
+  const initialRegionSyncRef = useRef(false);
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
+  };
+
+  const syncCartForRegion = useCallback(
+    async (regionValue, options = {}) => {
+      const { silent = false, voucherOverride } = options;
+      const parsedRegionId = Number(regionValue);
+
+      if (!Number.isInteger(parsedRegionId) || parsedRegionId <= 0) {
+        return { success: false, error: "Please select a valid region." };
+      }
+
+      try {
+        setRegionSyncing(true);
+
+        const response = await revalidateCartByRegion({
+          region_id: parsedRegionId,
+          voucher_code:
+            voucherOverride !== undefined
+              ? voucherOverride
+              : appliedVoucherCode || undefined,
+        });
+
+        const adjustments = Array.isArray(response?.adjustments)
+          ? response.adjustments
+          : [];
+
+        setRegionAdjustments(adjustments);
+        persistRegionInAuthUser(parsedRegionId);
+
+        if (response?.pricing) {
+          setPricing(response.pricing);
+        }
+
+        await loadCart();
+
+        if (!silent) {
+          if (adjustments.length > 0) {
+            setError(
+              "Some cart quantities were adjusted for selected region stock. Please review before placing order.",
+            );
+          } else {
+            setError("");
+          }
+        }
+
+        return { success: true, adjustments };
+      } catch (err) {
+        const message =
+          err.response?.data?.error || "Failed to validate stock for region";
+
+        if (!silent) {
+          setError(message);
+        }
+
+        return { success: false, error: message };
+      } finally {
+        setRegionSyncing(false);
+      }
+    },
+    [appliedVoucherCode, loadCart],
+  );
+
+  const handleRegionChange = async (e) => {
+    const selectedRegion = e.target.value;
+    setFormData((prev) => ({ ...prev, region_id: selectedRegion }));
+    setError("");
+
+    if (!selectedRegion) {
+      setRegionAdjustments([]);
+      return;
+    }
+
+    await syncCartForRegion(selectedRegion);
   };
 
   const refreshPricing = useCallback(
@@ -81,6 +207,51 @@ const CheckoutPage = () => {
     };
   }, [cart.items, appliedVoucherCode, refreshPricing]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadRegions = async () => {
+      try {
+        setRegionsLoading(true);
+        const response = await fetchOrderRegions();
+        if (!cancelled) {
+          setRegions(Array.isArray(response?.regions) ? response.regions : []);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err.response?.data?.error || "Failed to load regions.");
+        }
+      } finally {
+        if (!cancelled) {
+          setRegionsLoading(false);
+        }
+      }
+    };
+
+    loadRegions();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (initialRegionSyncRef.current) {
+      return;
+    }
+
+    if (!formData.region_id || regionsLoading) {
+      return;
+    }
+
+    if (!cart.items || cart.items.length === 0) {
+      initialRegionSyncRef.current = true;
+      return;
+    }
+
+    initialRegionSyncRef.current = true;
+    syncCartForRegion(formData.region_id, { silent: true });
+  }, [cart.items, formData.region_id, regionsLoading, syncCartForRegion]);
+
   const handleApplyVoucher = async () => {
     const normalized = String(voucherCodeInput || "")
       .trim()
@@ -136,8 +307,12 @@ const CheckoutPage = () => {
     e.preventDefault();
     setError("");
 
-    if (!formData.delivery_address || !formData.preferred_delivery_time) {
-      setError("Please fill in both address and delivery time.");
+    if (
+      !formData.delivery_address ||
+      !formData.preferred_delivery_time ||
+      !formData.region_id
+    ) {
+      setError("Please fill address, delivery time, and region.");
       return;
     }
 
@@ -147,9 +322,28 @@ const CheckoutPage = () => {
     }
 
     try {
+      const regionSyncResult = await syncCartForRegion(formData.region_id, {
+        silent: true,
+      });
+
+      if (!regionSyncResult.success) {
+        setError(
+          regionSyncResult.error || "Failed to validate selected region",
+        );
+        return;
+      }
+
+      if ((regionSyncResult.adjustments || []).length > 0) {
+        setError(
+          "Cart quantities were adjusted for selected region stock. Please review order summary and place order again.",
+        );
+        return;
+      }
+
       setLoading(true);
       await placeOrder({
         ...formData,
+        region_id: Number(formData.region_id),
         voucher_code: appliedVoucherCode || undefined,
       });
       setSuccess(true);
@@ -161,6 +355,13 @@ const CheckoutPage = () => {
         window.location.href = "/user/dashboard";
       }, 2500);
     } catch (err) {
+      if (
+        err.response?.status === 409 &&
+        Array.isArray(err.response?.data?.adjustments)
+      ) {
+        setRegionAdjustments(err.response.data.adjustments);
+        await loadCart();
+      }
       setError(err.response?.data?.error || "Failed to place order.");
     } finally {
       setLoading(false);
@@ -269,6 +470,62 @@ const CheckoutPage = () => {
                 marginBottom: "5px",
               }}
             >
+              Delivery Region *
+            </label>
+            <select
+              name="region_id"
+              value={formData.region_id}
+              onChange={handleRegionChange}
+              disabled={regionsLoading}
+              style={{
+                width: "100%",
+                padding: "10px",
+                borderRadius: "5px",
+                border: "1px solid #ccc",
+                backgroundColor: "#fff",
+              }}
+            >
+              <option value="">
+                {regionsLoading ? "Loading regions..." : "Select region"}
+              </option>
+              {regions.map((region) => (
+                <option key={region.region_id} value={region.region_id}>
+                  {formatRegionLabel(region.region_name)}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {regionAdjustments.length > 0 && (
+            <div
+              style={{
+                background: "#fff8e1",
+                border: "1px solid #f5d37a",
+                borderRadius: "8px",
+                padding: "10px 12px",
+                fontSize: "0.9rem",
+              }}
+            >
+              <strong>Quantity adjustments for selected region:</strong>
+              <ul style={{ margin: "8px 0 0", paddingLeft: "18px" }}>
+                {regionAdjustments.map((item) => (
+                  <li key={`${item.product_id}-${item.adjusted_quantity}`}>
+                    {item.product_name}: {item.requested_quantity} →{" "}
+                    {item.adjusted_quantity}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div>
+            <label
+              style={{
+                fontWeight: "bold",
+                display: "block",
+                marginBottom: "5px",
+              }}
+            >
               Voucher Code
             </label>
             <div style={{ display: "flex", gap: "8px" }}>
@@ -338,7 +595,7 @@ const CheckoutPage = () => {
 
           <button
             type="submit"
-            disabled={loading || cart.items.length === 0}
+            disabled={loading || cart.items.length === 0 || regionSyncing}
             style={{
               marginTop: "10px",
               padding: "15px",
@@ -349,8 +606,11 @@ const CheckoutPage = () => {
               fontWeight: "bold",
               fontSize: "1.1rem",
               cursor:
-                loading || cart.items.length === 0 ? "not-allowed" : "pointer",
-              opacity: loading || cart.items.length === 0 ? 0.7 : 1,
+                loading || cart.items.length === 0 || regionSyncing
+                  ? "not-allowed"
+                  : "pointer",
+              opacity:
+                loading || cart.items.length === 0 || regionSyncing ? 0.7 : 1,
             }}
           >
             {loading
@@ -493,9 +753,11 @@ const CheckoutPage = () => {
             ৳ {formatMoney(totals.finalTotal)}
           </span>
         </div>
-        {pricingLoading && (
+        {(pricingLoading || regionSyncing) && (
           <p style={{ marginTop: "10px", color: "#777", fontSize: "0.9rem" }}>
-            Recalculating offers...
+            {regionSyncing
+              ? "Revalidating selected region stock..."
+              : "Recalculating offers..."}
           </p>
         )}
       </div>

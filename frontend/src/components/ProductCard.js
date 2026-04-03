@@ -41,6 +41,7 @@ function ProductCard({ product }) {
     setError(null);
     const res = await changeQuantity(product.product_id, change, {
       price: discountedPrice,
+      stock_quantity: product.stock_quantity,
       product_name: product.product_name,
       photourl: product.photourl,
       unit: product.unit,

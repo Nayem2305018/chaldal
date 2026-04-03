@@ -15,7 +15,6 @@ router.post(
   authorizeRole(["user"]),
   cartController.addToCart,
 );
-
 module.exports = router;
 
 

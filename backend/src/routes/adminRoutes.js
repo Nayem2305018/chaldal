@@ -5,6 +5,7 @@
 const express = require("express");
 const router = express.Router();
 const adminController = require("../controllers/adminController");
+const categoryController = require("../controllers/categoryController");
 const { verifyToken, authorizeRole } = require("../middlewares/authMiddleware");
 
 // Middleware to require admin role
@@ -53,6 +54,11 @@ router.put(
 router.post("/product", adminOnly, adminController.createProduct);
 router.put("/product/:id", adminOnly, adminController.updateProduct);
 router.delete("/product/:id", adminOnly, adminController.deleteProduct);
+
+// Category Management
+router.post("/category", adminOnly, categoryController.createCategory);
+router.put("/category/:id", adminOnly, categoryController.updateCategory);
+router.delete("/category/:id", adminOnly, categoryController.deleteCategory);
 
 // Orders Management
 router.get("/orders", adminOnly, adminController.getOrders);
@@ -106,5 +112,3 @@ router.patch(
 );
 
 module.exports = router;
-
-

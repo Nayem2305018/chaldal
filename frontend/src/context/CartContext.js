@@ -10,6 +10,9 @@ import { fetchCart, updateCartItem, placeOrder } from "../services/api";
 
 const CartContext = createContext();
 
+const outOfStockMessage = "Product is out of stock.";
+const limitedStockMessage = "Sorry! limited quantity available";
+
 export const useCart = () => useContext(CartContext);
 
 export const CartProvider = ({ children }) => {
@@ -53,6 +56,25 @@ export const CartProvider = ({ children }) => {
       return { success: false, error: "Invalid quantity change" };
     }
 
+    const currentItemSnapshot = cart.items.find(
+      (i) => i.product_id === productId,
+    );
+    const currentQuantity = Number(currentItemSnapshot?.quantity || 0);
+    const knownStockRaw =
+      currentItemSnapshot?.stock_quantity ?? fallbackItem?.stock_quantity;
+    const knownStock = Number(knownStockRaw);
+    const hasKnownStock = Number.isFinite(knownStock);
+
+    if (change > 0 && hasKnownStock) {
+      if (knownStock <= 0) {
+        return { success: false, error: outOfStockMessage };
+      }
+
+      if (currentQuantity + Number(change) > knownStock) {
+        return { success: false, error: limitedStockMessage };
+      }
+    }
+
     // Mark a new logical mutation so older server responses cannot overwrite newer local state.
     const mutationVersion =
       (mutationVersionRef.current.get(productId) || 0) + 1;
@@ -84,6 +106,7 @@ export const CartProvider = ({ children }) => {
                   ...i,
                   quantity: newQuantity,
                   price: unitPrice,
+                  stock_quantity: i.stock_quantity,
                   line_total: lineTotal,
                 }
               : i,
@@ -97,6 +120,7 @@ export const CartProvider = ({ children }) => {
           product_name: fallbackItem.product_name,
           photourl: fallbackItem.photourl,
           unit: fallbackItem.unit,
+          stock_quantity: fallbackItem.stock_quantity,
           quantity,
           price: unitPrice,
           line_total: Number((quantity * unitPrice).toFixed(2)),

@@ -1,0 +1,3 @@
+-- Controller: user
+-- File: triggers.sql
+-- PostgreSQL: no custom triggers required by current runtime.

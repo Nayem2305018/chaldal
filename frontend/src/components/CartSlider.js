@@ -22,6 +22,13 @@ const CartSlider = () => {
     }
   }, [role, isOpen, setIsOpen]);
 
+  const handleQuantityChange = async (productId, change, item) => {
+    const result = await changeQuantity(productId, change, item);
+    if (result && !result.success && result.error) {
+      alert(result.error);
+    }
+  };
+
   const handleDrag = (e) => {
     // Only close if clicking the dark overlay behind the specific cart panel
     if (e.target.id === "cart-overlay") {
@@ -118,7 +125,9 @@ const CartSlider = () => {
                     }}
                   >
                     <button
-                      onClick={() => changeQuantity(item.product_id, -1, item)}
+                      onClick={() =>
+                        handleQuantityChange(item.product_id, -1, item)
+                      }
                       style={{
                         width: "25px",
                         height: "25px",
@@ -134,7 +143,9 @@ const CartSlider = () => {
                     </button>
                     <span>{item.quantity}</span>
                     <button
-                      onClick={() => changeQuantity(item.product_id, 1, item)}
+                      onClick={() =>
+                        handleQuantityChange(item.product_id, 1, item)
+                      }
                       style={{
                         width: "25px",
                         height: "25px",

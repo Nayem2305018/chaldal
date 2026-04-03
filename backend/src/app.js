@@ -18,10 +18,35 @@ const errorHandler = require("./middlewares/errorHandler");
 
 const app = express();
 
+const allowedOrigins = (process.env.CORS_ORIGIN || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const isLocalDevOrigin = (origin) => {
+  return /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+};
+
+if (allowedOrigins.length === 0) {
+  allowedOrigins.push("http://localhost:3000", "http://localhost:3001");
+}
+
 // Middleware
 app.use(
   cors({
-    origin: process.env.CORS_ORIGIN || "http://localhost:3000",
+    origin(origin, callback) {
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+
+      if (allowedOrigins.includes(origin) || isLocalDevOrigin(origin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
     credentials: true,
   }),
 );
@@ -66,7 +91,51 @@ app.use((req, res) => {
 // Error handler
 app.use(errorHandler);
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server started on http://localhost:${PORT}`);
-});
+const parseEnvInt = (value, fallback) => {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const requestedPort = parseEnvInt(process.env.PORT, 5000);
+const isProduction = process.env.NODE_ENV === "production";
+const allowPortFallback =
+  String(
+    process.env.ALLOW_PORT_FALLBACK || String(!isProduction),
+  ).toLowerCase() === "true";
+const maxPortFallbackAttempts = parseEnvInt(
+  process.env.PORT_FALLBACK_ATTEMPTS,
+  20,
+);
+
+const startServer = (port, attemptsLeft) => {
+  const server = app.listen(port, () => {
+    console.log(`🚀 Server started on http://localhost:${port}`);
+  });
+
+  server.on("error", (error) => {
+    if (error.code === "EADDRINUSE") {
+      if (allowPortFallback && attemptsLeft > 0) {
+        const nextPort = port + 1;
+        console.warn(
+          `⚠️  Port ${port} is busy, retrying on ${nextPort} (${attemptsLeft} attempts left)...`,
+        );
+        startServer(nextPort, attemptsLeft - 1);
+        return;
+      }
+
+      console.error(
+        [
+          `❌ Port ${port} is already in use.`,
+          "Stop the existing process or set a different PORT in backend/.env.",
+          "Optional: set ALLOW_PORT_FALLBACK=true to auto-try the next ports.",
+        ].join(" "),
+      );
+      process.exit(1);
+    }
+
+    console.error("❌ Server failed to start:", error);
+    process.exit(1);
+  });
+};
+
+startServer(requestedPort, maxPortFallbackAttempts);

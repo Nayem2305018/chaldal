@@ -1,0 +1,4 @@
+-- Controller: order
+-- File: procedures.sql
+-- PostgreSQL: no custom procedures required.
+-- Analytics-only policy: keep procedures under admin analytics artifacts.

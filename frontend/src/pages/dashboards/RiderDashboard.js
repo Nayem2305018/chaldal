@@ -6,7 +6,6 @@ const RiderDashboard = () => {
   const [myDeliveries, setMyDeliveries] = useState([]);
   const [availableOrders, setAvailableOrders] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [warehouseSelections, setWarehouseSelections] = useState({});
   const [paymentNotes, setPaymentNotes] = useState({});
   const [activeSection, setActiveSection] = useState("dashboard");
   const location = useLocation();
@@ -85,12 +84,8 @@ const RiderDashboard = () => {
   };
 
   const handleAssignRider = async (orderId) => {
-    const warehouse_id = warehouseSelections[orderId] || null;
-
     try {
-      await api.patch(`/order/assign-rider/${orderId}`, {
-        warehouse_id,
-      });
+      await api.patch(`/order/assign-rider/${orderId}`, {});
       alert("Order successfully assigned to you!");
       fetchData();
     } catch (err) {
@@ -447,40 +442,19 @@ const RiderDashboard = () => {
                     </div>
 
                     <div style={{ marginTop: "20px" }}>
-                      <label
+                      <div
                         style={{
-                          display: "block",
-                          fontSize: "0.9rem",
-                          fontWeight: "bold",
-                          marginBottom: "5px",
-                        }}
-                      >
-                        Preferred Pickup Warehouse (optional):
-                      </label>
-                      <select
-                        value={warehouseSelections[o.order_id] || ""}
-                        onChange={(e) =>
-                          setWarehouseSelections((prev) => ({
-                            ...prev,
-                            [o.order_id]: e.target.value,
-                          }))
-                        }
-                        style={{
-                          width: "100%",
-                          padding: "10px",
-                          border: "1px solid #ccc",
+                          background: "#eef7ff",
+                          border: "1px solid #cfe5ff",
                           borderRadius: "6px",
+                          padding: "10px",
                           marginBottom: "15px",
-                          boxSizing: "border-box",
+                          fontSize: "0.9rem",
                         }}
                       >
-                        <option value="">
-                          Auto allocate from all warehouses
-                        </option>
-                        <option value="1">Warehouse 1</option>
-                        <option value="2">Warehouse 2</option>
-                        <option value="3">Warehouse 3</option>
-                      </select>
+                        Pickup warehouse is auto-selected from your assigned
+                        region.
+                      </div>
                       <button
                         onClick={() => handleAssignRider(o.order_id)}
                         style={{

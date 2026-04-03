@@ -1,6 +1,8 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { fetchSignupRegions } from "../services/api";
+import { formatRegionLabel } from "../utils/regionLabel";
 import "../styles/Auth.css";
 
 const SignupPage = () => {
@@ -14,12 +16,45 @@ const SignupPage = () => {
     password: "",
     phone: "",
     appointment_code: "",
+    region_id: "",
   });
 
   const [fieldErrors, setFieldErrors] = useState({});
   const [serverError, setServerError] = useState("");
   const [success, setSuccess] = useState("");
   const [loading, setLoading] = useState(false);
+  const [regions, setRegions] = useState([]);
+  const [regionLoading, setRegionLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadRegions = async () => {
+      try {
+        setRegionLoading(true);
+        const response = await fetchSignupRegions();
+        if (!cancelled) {
+          setRegions(Array.isArray(response?.regions) ? response.regions : []);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setServerError(
+            error.response?.data?.error ||
+              "Failed to load regions. Please refresh and try again.",
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setRegionLoading(false);
+        }
+      }
+    };
+
+    loadRegions();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -31,7 +66,8 @@ const SignupPage = () => {
 
   const validateForm = () => {
     const errors = {};
-    const { name, email, password, phone, appointment_code } = formData;
+    const { name, email, password, phone, appointment_code, region_id } =
+      formData;
 
     if (!name.trim()) errors.name = "Full name is required.";
 
@@ -58,6 +94,10 @@ const SignupPage = () => {
         "Appointment code is required for rider signup.";
     }
 
+    if (!region_id) {
+      errors.region_id = "Please select your operating region.";
+    }
+
     setFieldErrors(errors);
     return Object.keys(errors).length === 0;
   };
@@ -72,6 +112,14 @@ const SignupPage = () => {
     try {
       setLoading(true);
       const signupData = { ...formData, role };
+      signupData.region_id = Number(formData.region_id);
+
+      if (role === "rider") {
+        // rider appointment_code stays required for rider flow
+      } else {
+        delete signupData.appointment_code;
+      }
+
       const response = await signupAuth(signupData);
 
       setSuccess(response.message);
@@ -228,6 +276,28 @@ const SignupPage = () => {
             />
             {fieldErrors.phone && (
               <span className="field-error">{fieldErrors.phone}</span>
+            )}
+          </div>
+
+          <div className="form-group">
+            <label>Operating Region *</label>
+            <select
+              name="region_id"
+              value={formData.region_id}
+              onChange={handleChange}
+              disabled={regionLoading}
+            >
+              <option value="">
+                {regionLoading ? "Loading regions..." : "Select a region"}
+              </option>
+              {regions.map((region) => (
+                <option key={region.region_id} value={region.region_id}>
+                  {formatRegionLabel(region.region_name)}
+                </option>
+              ))}
+            </select>
+            {fieldErrors.region_id && (
+              <span className="field-error">{fieldErrors.region_id}</span>
             )}
           </div>
 

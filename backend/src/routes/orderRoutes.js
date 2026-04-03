@@ -7,6 +7,8 @@ const router = express.Router();
 const orderController = require("../controllers/orderController");
 const { verifyToken, authorizeRole } = require("../middlewares/authMiddleware");
 
+router.get("/regions", orderController.getRegions);
+
 // User-only routes protected with JWT
 router.post(
   "/checkout",
@@ -20,6 +22,13 @@ router.post(
   verifyToken,
   authorizeRole(["user"]),
   orderController.previewCheckoutPricing,
+);
+
+router.post(
+  "/revalidate-region",
+  verifyToken,
+  authorizeRole(["user"]),
+  orderController.revalidateCartRegion,
 );
 
 router.get(
@@ -61,5 +70,3 @@ router.post(
 );
 
 module.exports = router;
-
-

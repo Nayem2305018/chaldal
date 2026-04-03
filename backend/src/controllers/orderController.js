@@ -1,13 +1,20 @@
-﻿
+/**
+ * SQL artifacts: backend/sql/controllers/order/{queries,functions,procedures,triggers}.sql
+ */
 const db = require("../db");
+const { getSql } = require("../utils/sqlFileLoader");
+const SQL = getSql("order");
 const { sendEmail } = require("../utils/emailService");
 const {
   ensureOfferSchema,
   computeDiscountAmount,
   normalizeVoucherCode,
-  pickBestProductDiscount,
   roundMoney,
 } = require("../utils/offerService");
+const { ensureRegionSchema } = require("../utils/regionService");
+const {
+  ensureOrderAutomationSchema,
+} = require("../utils/orderAutomationService");
 
 let paymentConfirmationTableReady = false;
 let warehouseAllocationSchemaReady = false;
@@ -17,16 +24,7 @@ const ensurePaymentConfirmationTable = async () => {
     return;
   }
 
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS rider_payment_confirmation (
-      order_id INT PRIMARY KEY REFERENCES orders(order_id) ON DELETE CASCADE,
-      rider_id INT NOT NULL REFERENCES rider(rider_id),
-      rider_message TEXT NOT NULL,
-      sent_at TIMESTAMP DEFAULT NOW(),
-      admin_confirmed_at TIMESTAMP,
-      admin_confirmed_by INT REFERENCES admin(admin_id)
-    )
-  `);
+  await db.query(SQL.q_0001);
 
   paymentConfirmationTableReady = true;
 };
@@ -36,59 +34,34 @@ const ensureWarehouseAllocationSchema = async () => {
     return;
   }
 
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS delivery_inventory_allocation (
-      allocation_id SERIAL PRIMARY KEY,
-      delivery_id INT NOT NULL REFERENCES delivery(delivery_id) ON DELETE CASCADE,
-      order_id INT NOT NULL REFERENCES orders(order_id) ON DELETE CASCADE,
-      product_id INT NOT NULL REFERENCES product(product_id),
-      warehouse_id INT NOT NULL REFERENCES warehouse(warehouse_id),
-      allocated_quantity INT NOT NULL CHECK (allocated_quantity > 0),
-      created_at TIMESTAMP DEFAULT NOW()
-    )
-  `);
+  await ensureRegionSchema(db);
 
-  await db.query(
-    "CREATE UNIQUE INDEX IF NOT EXISTS ux_inventory_product_warehouse ON inventory(product_id, warehouse_id)",
-  );
+  await ensureOrderAutomationSchema(db);
 
-  await db.query(`
-    INSERT INTO warehouse (warehouse_id, name, location)
-    VALUES
-      (1, 'Warehouse 1', 'Main Hub 1'),
-      (2, 'Warehouse 2', 'Main Hub 2'),
-      (3, 'Warehouse 3', 'Main Hub 3')
-    ON CONFLICT (warehouse_id) DO NOTHING
-  `);
+  await db.query(SQL.q_0002);
+
+  await db.query(SQL.q_0003);
+
+  await db.query(SQL.q_0004);
 
   try {
-    const missingInventoryRows = await db.query(`
-      SELECT p.product_id, COALESCE(p.stock_quantity, 0)::INT AS stock_quantity
-      FROM product p
-      LEFT JOIN inventory i ON i.product_id = p.product_id
-      GROUP BY p.product_id, p.stock_quantity
-      HAVING COUNT(i.inventory_id) = 0
-    `);
+    const missingInventoryRows = await db.query(SQL.q_0005);
+    const warehousesRes = await db.query(SQL.q_0067);
+    const warehouses = warehousesRes.rows || [];
 
     for (const row of missingInventoryRows.rows) {
       const initialStock = Number(row.stock_quantity || 0);
-      if (initialStock <= 0) continue;
+      if (warehouses.length === 0) continue;
 
-      await db.query(
-        `
-        INSERT INTO inventory (inventory_id, product_id, warehouse_id, stock_quantity, last_updated)
-        VALUES (
-          (SELECT COALESCE(MAX(inventory_id), 0) + 1 FROM inventory),
-          $1,
-          1,
-          $2,
-          NOW()
-        )
-        ON CONFLICT (product_id, warehouse_id)
-        DO NOTHING
-        `,
-        [row.product_id, initialStock],
-      );
+      const safeStock = Math.max(0, initialStock);
+      const baseShare = Math.floor(safeStock / warehouses.length);
+      const remainder = safeStock % warehouses.length;
+
+      for (let index = 0; index < warehouses.length; index += 1) {
+        const warehouseId = Number(warehouses[index].warehouse_id);
+        const seededStock = baseShare + (index < remainder ? 1 : 0);
+        await db.query(SQL.q_0006, [row.product_id, warehouseId, seededStock]);
+      }
     }
   } catch (error) {
     if (error.code !== "42703") {
@@ -101,18 +74,7 @@ const ensureWarehouseAllocationSchema = async () => {
 
 const syncProductStockTotal = async (client, productId) => {
   try {
-    await client.query(
-      `
-      UPDATE product
-      SET stock_quantity = (
-        SELECT COALESCE(SUM(stock_quantity), 0)
-        FROM inventory
-        WHERE product_id = $1
-      )
-      WHERE product_id = $1
-      `,
-      [productId],
-    );
+    await client.query(SQL.q_0023, [productId]);
   } catch (error) {
     // Some historical schemas may not contain product.stock_quantity.
     if (error.code !== "42703") {
@@ -130,39 +92,7 @@ const escapeHtml = (value) =>
     .replace(/'/g, "&#39;");
 
 const notifyUserDeliveryCompleted = async ({ orderId }) => {
-  const orderDetailsRes = await db.query(
-    `
-    SELECT
-      o.order_id,
-      o.total_price,
-      o.delivery_address,
-      o.order_date,
-      u.name AS customer_name,
-      u.email AS customer_email,
-      (
-        SELECT COALESCE(
-          json_agg(
-            json_build_object(
-              'product_name', p.product_name,
-              'quantity', oi.quantity,
-              'unit_price', oi.unit_price,
-              'subtotal', oi.subtotal
-            )
-            ORDER BY oi.order_item_id
-          ),
-          '[]'::json
-        )
-        FROM order_item oi
-        JOIN product p ON p.product_id = oi.product_id
-        WHERE oi.order_id = o.order_id
-      ) AS items
-    FROM orders o
-    JOIN users u ON u.user_id = o.user_id
-    WHERE o.order_id = $1
-    LIMIT 1
-    `,
-    [orderId],
-  );
+  const orderDetailsRes = await db.query(SQL.q_0007, [orderId]);
 
   if (orderDetailsRes.rows.length === 0) {
     return { sent: false, reason: "order-not-found" };
@@ -254,25 +184,7 @@ const getActiveProductDiscountMap = async (client, productIds) => {
     return new Map();
   }
 
-  const result = await client.query(
-    `
-    SELECT
-      product_discount_id,
-      product_id,
-      discount_type,
-      discount_value,
-      max_discount_amount,
-      start_at,
-      end_at,
-      is_active
-    FROM product_discounts
-    WHERE product_id = ANY($1::INT[])
-      AND is_active = TRUE
-      AND (start_at IS NULL OR start_at <= NOW())
-      AND (end_at IS NULL OR end_at >= NOW())
-    `,
-    [productIds],
-  );
+  const result = await client.query(SQL.q_0024, [productIds]);
 
   const map = new Map();
   for (const row of result.rows) {
@@ -295,13 +207,7 @@ const calculateCartPricing = async ({
   await ensureOfferSchema(client);
 
   const cartRes = await client.query(
-    `
-    SELECT cart_id
-    FROM cart
-    WHERE user_id = $1
-      AND status = 'active'
-    ${lockRows ? "FOR UPDATE" : ""}
-    `,
+    lockRows ? SQL.calc_cart_select_for_update : SQL.calc_cart_select_base,
     [userId],
   );
 
@@ -312,18 +218,7 @@ const calculateCartPricing = async ({
   const cartId = Number(cartRes.rows[0].cart_id);
 
   const itemsRes = await client.query(
-    `
-    SELECT
-      ci.product_id,
-      ci.quantity,
-      COALESCE(ci.unit_price, p.price) AS base_unit_price,
-      p.product_name,
-      COALESCE(p.stock_quantity, 0) AS fallback_stock_quantity
-    FROM cart_item ci
-    JOIN product p ON p.product_id = ci.product_id
-    WHERE ci.cart_id = $1
-    ${lockRows ? "FOR UPDATE OF ci" : ""}
-    `,
+    lockRows ? SQL.calc_cart_items_for_update : SQL.calc_cart_items_base,
     [cartId],
   );
 
@@ -344,17 +239,34 @@ const calculateCartPricing = async ({
     const quantity = Number(item.quantity || 0);
     const baseUnitPrice = Number(item.base_unit_price || 0);
     const discountRows = discountMap.get(Number(item.product_id)) || [];
-    const bestDiscount = pickBestProductDiscount(discountRows, baseUnitPrice);
-    const productDiscountPerUnit = Number(bestDiscount?.discount_amount || 0);
-    const effectiveUnitPrice = roundMoney(
-      baseUnitPrice - productDiscountPerUnit,
-    );
-
     const lineBaseTotal = roundMoney(baseUnitPrice * quantity);
+
+    // Apply product discount on the full line total so max_discount_amount acts as a hard cap per line item.
+    let bestDiscount = null;
+    for (const row of discountRows) {
+      const discountAmount = computeDiscountAmount(
+        lineBaseTotal,
+        row.discount_type,
+        row.discount_value,
+        row.max_discount_amount,
+      );
+
+      if (!bestDiscount || discountAmount > bestDiscount.discount_amount) {
+        bestDiscount = {
+          ...row,
+          discount_amount: discountAmount,
+        };
+      }
+    }
+
     const lineProductDiscountTotal = roundMoney(
-      productDiscountPerUnit * quantity,
+      Number(bestDiscount?.discount_amount || 0),
     );
-    const lineTotal = roundMoney(effectiveUnitPrice * quantity);
+    const lineTotal = roundMoney(lineBaseTotal - lineProductDiscountTotal);
+    const productDiscountPerUnit =
+      quantity > 0 ? roundMoney(lineProductDiscountTotal / quantity) : 0;
+    const effectiveUnitPrice =
+      quantity > 0 ? roundMoney(lineTotal / quantity) : 0;
 
     subtotalBeforeDiscount = roundMoney(subtotalBeforeDiscount + lineBaseTotal);
     productDiscountTotal = roundMoney(
@@ -398,15 +310,7 @@ const calculateCartPricing = async ({
   let voucherDiscountTotal = 0;
 
   if (normalizedCode) {
-    const voucherRes = await client.query(
-      `
-      SELECT *
-      FROM vouchers
-      WHERE UPPER(code) = UPPER($1)
-      LIMIT 1
-      `,
-      [normalizedCode],
-    );
+    const voucherRes = await client.query(SQL.q_0025, [normalizedCode]);
 
     if (voucherRes.rows.length === 0) {
       throw buildHttpError(400, "Invalid voucher code");
@@ -435,15 +339,10 @@ const calculateCartPricing = async ({
       );
     }
 
-    const usageRes = await client.query(
-      `
-      SELECT COUNT(*)::INT AS usage_count
-      FROM voucher_usage_history
-      WHERE voucher_id = $1
-        AND user_id = $2
-      `,
-      [voucher.voucher_id, userId],
-    );
+    const usageRes = await client.query(SQL.q_0026, [
+      voucher.voucher_id,
+      userId,
+    ]);
 
     const usageCount = Number(usageRes.rows[0].usage_count || 0);
     const usageLimit = Number(voucher.usage_limit_per_user || 1);
@@ -493,6 +392,84 @@ const calculateCartPricing = async ({
   };
 };
 
+const resolveRegionWarehouse = async (client, regionId) => {
+  const warehouseRes = await client.query(SQL.q_0066, [regionId]);
+
+  if (warehouseRes.rows.length === 0) {
+    throw buildHttpError(400, "No warehouse configured for selected region");
+  }
+
+  const warehouse = warehouseRes.rows[0];
+  return {
+    warehouse_id: Number(warehouse.warehouse_id),
+    warehouse_name: warehouse.name,
+    region_id: Number(warehouse.region_id),
+  };
+};
+
+const reconcileCartForRegionWarehouse = async ({
+  client,
+  userId,
+  warehouseId,
+}) => {
+  const cartRes = await client.query(SQL.calc_cart_select_for_update, [userId]);
+
+  if (cartRes.rows.length === 0) {
+    return { cart_id: null, adjustments: [] };
+  }
+
+  const cartId = Number(cartRes.rows[0].cart_id);
+  const itemsRes = await client.query(SQL.calc_cart_items_for_update, [cartId]);
+
+  const adjustments = [];
+
+  for (const item of itemsRes.rows) {
+    const productId = Number(item.product_id);
+    const cartItemId = Number(item.cart_item_id);
+    const requestedQuantity = Number(item.quantity || 0);
+    const baseUnitPrice = Number(item.base_unit_price || 0);
+
+    const stockRes = await client.query(SQL.q_0068, [productId, warehouseId]);
+    const availableStock = Number(stockRes.rows[0]?.stock_quantity || 0);
+
+    if (availableStock <= 0) {
+      await client.query(SQL.q_0070, [cartItemId]);
+      adjustments.push({
+        product_id: productId,
+        product_name: item.product_name,
+        requested_quantity: requestedQuantity,
+        adjusted_quantity: 0,
+        available_quantity: 0,
+      });
+      continue;
+    }
+
+    if (requestedQuantity > availableStock) {
+      const adjustedQuantity = availableStock;
+      const adjustedLineTotal = roundMoney(adjustedQuantity * baseUnitPrice);
+
+      await client.query(SQL.q_0071, [
+        adjustedQuantity,
+        adjustedLineTotal,
+        cartItemId,
+      ]);
+
+      adjustments.push({
+        product_id: productId,
+        product_name: item.product_name,
+        requested_quantity: requestedQuantity,
+        adjusted_quantity: adjustedQuantity,
+        available_quantity: availableStock,
+      });
+    }
+  }
+
+  return {
+    cart_id: cartId,
+    adjustments,
+  };
+};
+
 // ======================= CHECKOUT =======================
 exports.checkout = async (req, res) => {
   const client = await db.connect();
@@ -503,6 +480,7 @@ exports.checkout = async (req, res) => {
     const userId = req.user.id;
     const { delivery_address, preferred_delivery_time, voucher_code } =
       req.body;
+    const regionId = Number(req.body.region_id);
 
     if (!delivery_address)
       return res.status(400).json({ error: "Delivery address is required" });
@@ -512,7 +490,39 @@ exports.checkout = async (req, res) => {
         .status(400)
         .json({ error: "Preferred delivery time is required" });
 
-    await client.query("BEGIN");
+    if (!Number.isInteger(regionId) || regionId <= 0) {
+      return res.status(400).json({ error: "A valid region_id is required" });
+    }
+
+    await ensureRegionSchema(client);
+
+    const regionExistsRes = await client.query(SQL.q_0064, [regionId]);
+
+    if (regionExistsRes.rows.length === 0) {
+      return res.status(400).json({ error: "Selected region_id is invalid" });
+    }
+
+    const regionWarehouse = await resolveRegionWarehouse(client, regionId);
+
+    await client.query(SQL.q_0027);
+    await client.query(SQL.q_0072, [regionId, userId]);
+
+    const reconciliation = await reconcileCartForRegionWarehouse({
+      client,
+      userId,
+      warehouseId: regionWarehouse.warehouse_id,
+    });
+
+    if (reconciliation.adjustments.length > 0) {
+      await client.query(SQL.q_0029);
+      return res.status(409).json({
+        error:
+          "Cart quantities were adjusted based on selected region stock. Please review cart and place order again.",
+        region_id: regionId,
+        warehouse_id: regionWarehouse.warehouse_id,
+        adjustments: reconciliation.adjustments,
+      });
+    }
 
     const pricing = await calculateCartPricing({
       client,
@@ -521,73 +531,52 @@ exports.checkout = async (req, res) => {
       lockRows: true,
     });
 
+    if (!Array.isArray(pricing.items) || pricing.items.length === 0) {
+      await client.query(SQL.q_0029);
+      return res.status(400).json({ error: "Cart has no items" });
+    }
+
     const cartId = pricing.cart_id;
 
-    // Stock validation against all warehouses combined
+    const touchedProducts = new Set();
+
+    // Reserve stock from the selected region warehouse only.
     for (const item of pricing.items) {
-      const stockRes = await client.query(
-        `
-        SELECT COALESCE(SUM(stock_quantity), 0)::INT AS total_stock
-        FROM inventory
-        WHERE product_id = $1
-        `,
-        [item.product_id],
-      );
+      const requestedQty = Number(item.quantity || 0);
+      const reserveRes = await client.query(SQL.q_0069, [
+        item.product_id,
+        regionWarehouse.warehouse_id,
+        requestedQty,
+      ]);
 
-      let totalStock = Number(stockRes.rows[0]?.total_stock || 0);
-
-      // Backward compatibility for old datasets that still only track product.stock_quantity
-      if (totalStock === 0) {
-        totalStock = Number(item.fallback_stock_quantity || 0);
-      }
-
-      if (Number(item.quantity) > totalStock) {
-        await client.query("ROLLBACK");
+      if (reserveRes.rowCount === 0) {
+        await client.query(SQL.q_0029);
         return res.status(400).json({
-          error: `Sorry! limited stock for product ${item.product_id}`,
+          error: "Sorry! limited quantity available",
         });
       }
+
+      touchedProducts.add(Number(item.product_id));
     }
 
     // Create order with manual ID handling
-    const maxOrderRes = await client.query(
-      "SELECT COALESCE(MAX(order_id), 0) + 1 AS next_id FROM orders",
-    );
+    const maxOrderRes = await client.query(SQL.q_0030);
     const orderId = maxOrderRes.rows[0].next_id;
 
-    await client.query(
-      `INSERT INTO orders 
-      (
-        order_id,
-        user_id,
-        total_price,
-        order_status,
-        payment_status,
-        order_date,
-        delivery_address,
-        preferred_delivery_time,
-        subtotal_before_discount,
-        product_discount_total,
-        voucher_discount_total,
-        voucher_code
-      ) 
-      VALUES ($1, $2, $3, 'pending', 'unpaid', NOW(), $4, $5, $6, $7, $8, $9)`,
-      [
-        orderId,
-        userId,
-        pricing.final_total,
-        delivery_address,
-        preferred_delivery_time,
-        pricing.subtotal_before_discount,
-        pricing.product_discount_total,
-        pricing.voucher_discount_total,
-        pricing.applied_voucher?.code || null,
-      ],
-    );
+    await client.query(SQL.q_0031, [
+      orderId,
+      userId,
+      pricing.final_total,
+      delivery_address,
+      preferred_delivery_time,
+      pricing.subtotal_before_discount,
+      pricing.product_discount_total,
+      pricing.voucher_discount_total,
+      pricing.applied_voucher?.code || null,
+      regionId,
+    ]);
     // Fetch Base Order Item ID
-    const maxOrderItemRes = await client.query(
-      "SELECT COALESCE(MAX(order_item_id), 0) AS max_id FROM order_item",
-    );
+    const maxOrderItemRes = await client.query(SQL.q_0032);
     let nextOrderItemId = maxOrderItemRes.rows[0].max_id;
 
     // Insert order items
@@ -595,76 +584,47 @@ exports.checkout = async (req, res) => {
       nextOrderItemId++;
       const subtotal = Number(item.line_total);
 
-      await client.query(
-        `
-        INSERT INTO order_item (
-          order_item_id,
-          order_id,
-          product_id,
-          quantity,
-          unit_price,
-          subtotal,
-          original_unit_price,
-          product_discount_per_unit,
-          applied_product_discount_id
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        `,
-        [
-          nextOrderItemId,
-          orderId,
-          item.product_id,
-          item.quantity,
-          item.effective_unit_price,
-          subtotal,
-          item.base_unit_price,
-          item.product_discount_per_unit,
-          item.applied_product_discount_id,
-        ],
-      );
+      await client.query(SQL.q_0033, [
+        nextOrderItemId,
+        orderId,
+        item.product_id,
+        item.quantity,
+        item.effective_unit_price,
+        subtotal,
+        item.base_unit_price,
+        item.product_discount_per_unit,
+        item.applied_product_discount_id,
+      ]);
+    }
+
+    for (const productId of touchedProducts) {
+      await syncProductStockTotal(client, productId);
     }
 
     if (pricing.applied_voucher && pricing.voucher_discount_total > 0) {
-      const usageIdRes = await client.query(
-        "SELECT COALESCE(MAX(usage_id), 0) + 1 AS next_id FROM voucher_usage_history",
-      );
+      const usageIdRes = await client.query(SQL.q_0034);
       const usageId = Number(usageIdRes.rows[0].next_id);
 
-      await client.query(
-        `
-        INSERT INTO voucher_usage_history (
-          usage_id,
-          voucher_id,
-          user_id,
-          order_id,
-          voucher_code,
-          discount_amount,
-          used_at
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, NOW())
-        `,
-        [
-          usageId,
-          pricing.applied_voucher.voucher_id,
-          userId,
-          orderId,
-          pricing.applied_voucher.code,
-          pricing.voucher_discount_total,
-        ],
-      );
+      await client.query(SQL.q_0035, [
+        usageId,
+        pricing.applied_voucher.voucher_id,
+        userId,
+        orderId,
+        pricing.applied_voucher.code,
+        pricing.voucher_discount_total,
+      ]);
     }
 
     // Mark cart as ordered
-    await client.query(
-      "UPDATE cart SET status = 'ordered' WHERE cart_id = $1",
-      [cartId],
-    );
+    await client.query(SQL.q_0036, [cartId]);
 
-    await client.query("COMMIT");
+    await client.query(SQL.q_0037);
 
     res.json({
       message: "Your order is on its way!",
       order_id: orderId,
+      region_id: regionId,
+      warehouse_id: regionWarehouse.warehouse_id,
       pricing: {
         subtotal_before_discount: pricing.subtotal_before_discount,
         product_discount_total: pricing.product_discount_total,
@@ -674,7 +634,7 @@ exports.checkout = async (req, res) => {
       },
     });
   } catch (error) {
-    await client.query("ROLLBACK");
+    await client.query(SQL.q_0038);
     console.error(error);
     res
       .status(error.status || 500)
@@ -709,26 +669,82 @@ exports.previewCheckoutPricing = async (req, res) => {
   }
 };
 
+exports.revalidateCartRegion = async (req, res) => {
+  const client = await db.connect();
+
+  try {
+    await ensureWarehouseAllocationSchema();
+
+    const userId = req.user.id;
+    const regionId = Number(req.body.region_id);
+    const voucherCode = req.body.voucher_code;
+
+    if (!Number.isInteger(regionId) || regionId <= 0) {
+      return res.status(400).json({ error: "A valid region_id is required" });
+    }
+
+    await ensureRegionSchema(client);
+
+    const regionExistsRes = await client.query(SQL.q_0064, [regionId]);
+    if (regionExistsRes.rows.length === 0) {
+      return res.status(400).json({ error: "Selected region_id is invalid" });
+    }
+
+    const regionWarehouse = await resolveRegionWarehouse(client, regionId);
+
+    await client.query(SQL.q_0027);
+    await client.query(SQL.q_0072, [regionId, userId]);
+
+    const reconciliation = await reconcileCartForRegionWarehouse({
+      client,
+      userId,
+      warehouseId: regionWarehouse.warehouse_id,
+    });
+
+    await client.query(SQL.q_0037);
+
+    let pricing = null;
+    try {
+      pricing = await calculateCartPricing({
+        client,
+        userId,
+        voucherCode,
+        lockRows: false,
+      });
+    } catch (pricingError) {
+      if (
+        pricingError?.message !== "No active cart found" &&
+        pricingError?.message !== "Cart has no items"
+      ) {
+        throw pricingError;
+      }
+    }
+
+    return res.status(200).json({
+      region_id: regionId,
+      warehouse_id: regionWarehouse.warehouse_id,
+      warehouse_name: regionWarehouse.warehouse_name,
+      adjustments: reconciliation.adjustments,
+      pricing,
+    });
+  } catch (error) {
+    try {
+      await client.query(SQL.q_0038);
+    } catch (_) {}
+
+    console.error("Revalidate cart region error:", error);
+    return res
+      .status(error.status || 500)
+      .json({ error: error.message || "Failed to revalidate cart" });
+  } finally {
+    client.release();
+  }
+};
+
 // ======================= USER ORDERS =======================
 exports.getMyOrders = async (req, res) => {
   try {
-    const result = await db.query(
-      `
-      SELECT o.*, 
-      (SELECT json_agg(json_build_object(
-        'product_name', p.product_name,
-        'quantity', oi.quantity,
-        'unit_price', oi.unit_price
-      ))
-      FROM order_item oi
-      JOIN product p ON oi.product_id = p.product_id
-      WHERE oi.order_id = o.order_id) AS items
-      FROM orders o
-      WHERE user_id = $1
-      ORDER BY order_date DESC
-      `,
-      [req.user.id],
-    );
+    const result = await db.query(SQL.q_0008, [req.user.id]);
 
     res.json(result.rows);
   } catch (e) {
@@ -742,45 +758,7 @@ exports.getAssignedOrders = async (req, res) => {
     await ensurePaymentConfirmationTable();
     await ensureWarehouseAllocationSchema();
 
-    const result = await db.query(
-      `
-      SELECT o.*, d.delivery_id, d.delivery_status, d.warehouse_id,
-      rpc.rider_message AS rider_payment_message,
-      rpc.sent_at AS rider_payment_sent_at,
-      rpc.admin_confirmed_at,
-      (
-        SELECT COALESCE(
-          json_agg(
-            json_build_object(
-              'warehouse_id', dia.warehouse_id,
-              'product_id', dia.product_id,
-              'product_name', p.product_name,
-              'allocated_quantity', dia.allocated_quantity
-            )
-            ORDER BY dia.warehouse_id, dia.product_id
-          ),
-          '[]'::json
-        )
-        FROM delivery_inventory_allocation dia
-        JOIN product p ON p.product_id = dia.product_id
-        WHERE dia.order_id = o.order_id
-      ) AS warehouse_allocations,
-      (SELECT json_agg(json_build_object(
-        'product_name', p.product_name,
-        'quantity', oi.quantity,
-        'unit_price', oi.unit_price
-      ))
-      FROM order_item oi
-      JOIN product p ON oi.product_id = p.product_id
-      WHERE oi.order_id = o.order_id) AS items
-      FROM orders o
-      JOIN delivery d ON o.order_id = d.order_id
-      LEFT JOIN rider_payment_confirmation rpc ON rpc.order_id = o.order_id
-      WHERE d.rider_id = $1
-      ORDER BY o.order_date DESC
-      `,
-      [req.user.id],
-    );
+    const result = await db.query(SQL.q_0009, [req.user.id]);
 
     res.json(result.rows);
   } catch (e) {
@@ -791,27 +769,26 @@ exports.getAssignedOrders = async (req, res) => {
 // ======================= AVAILABLE ORDERS =======================
 exports.getAvailableOrders = async (req, res) => {
   try {
-    const result = await db.query(
-      `
-      SELECT o.*, 
-      (SELECT json_agg(json_build_object(
-        'product_name', p.product_name,
-        'quantity', oi.quantity,
-        'unit_price', oi.unit_price
-      ))
-      FROM order_item oi
-      JOIN product p ON oi.product_id = p.product_id
-      WHERE oi.order_id = o.order_id) AS items
-      FROM orders o
-      WHERE order_status = 'pending'
-      AND order_id NOT IN (SELECT order_id FROM delivery)
-      ORDER BY order_date DESC
-      `,
-    );
+    await ensureRegionSchema(db);
+
+    const result = await db.query(SQL.q_0010, [req.user.id]);
 
     res.json(result.rows);
   } catch (e) {
     res.status(500).json({ error: "Error fetching available orders" });
+  }
+};
+
+exports.getRegions = async (req, res) => {
+  try {
+    await ensureRegionSchema(db);
+
+    const result = await db.query(SQL.q_0063);
+
+    return res.status(200).json({ regions: result.rows });
+  } catch (error) {
+    console.error("Get order regions error:", error);
+    return res.status(500).json({ error: "Error fetching regions" });
   }
 };
 
@@ -821,259 +798,110 @@ exports.selfAssignOrder = async (req, res) => {
 
   try {
     const { order_id } = req.params;
-    const { warehouse_id } = req.body;
     const rider_id = req.user.id;
-
-    const preferredWarehouseId =
-      warehouse_id === undefined || warehouse_id === null || warehouse_id === ""
-        ? null
-        : Number(warehouse_id);
-
-    if (
-      preferredWarehouseId !== null &&
-      !Number.isInteger(preferredWarehouseId)
-    ) {
-      return res.status(400).json({
-        error: "warehouse_id must be a valid integer if provided",
-      });
-    }
 
     await ensureWarehouseAllocationSchema();
     await ensurePaymentConfirmationTable();
+    await ensureRegionSchema(client);
 
-    await client.query("BEGIN");
+    await client.query(SQL.q_0039);
 
-    const pendingVerificationRes = await client.query(
-      `
-      SELECT o.order_id
-      FROM delivery d
-      JOIN orders o ON o.order_id = d.order_id
-      WHERE d.rider_id = $1
-        AND d.delivery_status = 'delivered'
-        AND o.payment_status <> 'paid'
-      ORDER BY o.order_date ASC
-      LIMIT 1
-      `,
-      [rider_id],
-    );
+    const pendingVerificationRes = await client.query(SQL.q_0040, [rider_id]);
 
     if (pendingVerificationRes.rows.length > 0) {
-      await client.query("ROLLBACK");
+      await client.query(SQL.q_0041);
       return res.status(400).json({
         error: `You cannot assign a new order until admin verifies collected payment for order #${pendingVerificationRes.rows[0].order_id}`,
       });
     }
 
-    if (preferredWarehouseId !== null) {
-      const warehouseRes = await client.query(
-        "SELECT warehouse_id FROM warehouse WHERE warehouse_id = $1",
-        [preferredWarehouseId],
-      );
+    const riderRegionRes = await client.query(SQL.q_0065, [rider_id]);
+    const riderRegionId = Number(riderRegionRes.rows[0]?.region_id);
 
-      if (warehouseRes.rows.length === 0) {
-        await client.query("ROLLBACK");
-        return res
-          .status(400)
-          .json({ error: "Selected warehouse does not exist" });
-      }
+    if (!Number.isInteger(riderRegionId) || riderRegionId <= 0) {
+      await client.query(SQL.q_0041);
+      return res.status(400).json({
+        error: "Rider region is not configured. Please contact admin.",
+      });
     }
 
-    const orderRes = await client.query(
-      "SELECT * FROM orders WHERE order_id = $1 FOR UPDATE",
-      [order_id],
-    );
+    const orderRes = await client.query(SQL.q_0044, [order_id]);
 
     if (orderRes.rows.length === 0) {
-      await client.query("ROLLBACK");
+      await client.query(SQL.q_0045);
       return res.status(404).json({ error: "Order not found" });
     }
 
     const order = orderRes.rows[0];
+    const orderRegionId = Number(order.region_id);
+
+    if (!Number.isInteger(orderRegionId) || orderRegionId !== riderRegionId) {
+      await client.query(SQL.q_0046);
+      return res.status(403).json({
+        error: "You can only assign orders from your own region",
+      });
+    }
 
     if (order.order_status !== "pending") {
-      await client.query("ROLLBACK");
+      await client.query(SQL.q_0046);
       return res.status(400).json({ error: "Already assigned" });
     }
 
     // Prevent duplicate assignment
-    const check = await client.query(
-      "SELECT * FROM delivery WHERE order_id = $1",
-      [order_id],
-    );
+    const check = await client.query(SQL.q_0047, [order_id]);
 
     if (check.rows.length > 0) {
-      await client.query("ROLLBACK");
+      await client.query(SQL.q_0048);
       return res.status(400).json({ error: "Already assigned" });
     }
 
-    const orderItemsRes = await client.query(
-      `
-      SELECT oi.product_id, oi.quantity, p.product_name
-      FROM order_item oi
-      JOIN product p ON p.product_id = oi.product_id
-      WHERE oi.order_id = $1
-      `,
-      [order_id],
-    );
+    const regionWarehouse = await resolveRegionWarehouse(client, orderRegionId);
+
+    const orderItemsRes = await client.query(SQL.q_0049, [order_id]);
 
     if (orderItemsRes.rows.length === 0) {
-      await client.query("ROLLBACK");
+      await client.query(SQL.q_0050);
       return res.status(400).json({ error: "Order has no items to allocate" });
     }
 
     const allocationRows = [];
 
     for (const item of orderItemsRes.rows) {
-      if (preferredWarehouseId !== null) {
-        const preferredStockRes = await client.query(
-          `
-          SELECT i.stock_quantity
-          FROM inventory i
-          WHERE i.product_id = $1
-            AND i.warehouse_id = $2
-          FOR UPDATE
-          `,
-          [item.product_id, preferredWarehouseId],
-        );
-
-        const availableInPreferredWarehouse = Number(
-          preferredStockRes.rows[0]?.stock_quantity || 0,
-        );
-
-        if (availableInPreferredWarehouse < Number(item.quantity)) {
-          await client.query("ROLLBACK");
-          return res.status(400).json({
-            error: `Insufficient stock for ${item.product_name} in warehouse ${preferredWarehouseId}. Required ${item.quantity}, available ${availableInPreferredWarehouse}. Please collect the items from another warehouse.`,
-          });
-        }
-
-        allocationRows.push({
-          order_id: Number(order_id),
-          product_id: Number(item.product_id),
-          product_name: item.product_name,
-          warehouse_id: preferredWarehouseId,
-          allocated_quantity: Number(item.quantity),
-        });
-
-        continue;
-      }
-
-      const inventoryRowsRes = await client.query(
-        `
-        SELECT i.warehouse_id, i.stock_quantity
-        FROM inventory i
-        WHERE i.product_id = $1
-          AND i.stock_quantity > 0
-        ORDER BY
-          CASE WHEN $2::INT IS NOT NULL AND i.warehouse_id = $2 THEN 0 ELSE 1 END,
-          i.stock_quantity DESC,
-          i.warehouse_id ASC
-        FOR UPDATE
-        `,
-        [item.product_id, preferredWarehouseId],
-      );
-
-      const inventoryRows = inventoryRowsRes.rows;
-      const totalAvailable = inventoryRows.reduce(
-        (sum, row) => sum + Number(row.stock_quantity),
-        0,
-      );
-
-      if (totalAvailable < Number(item.quantity)) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({
-          error: `Not enough stock for ${item.product_name}. Required ${item.quantity}, available ${totalAvailable}.`,
-        });
-      }
-
-      let remaining = Number(item.quantity);
-
-      for (const stockRow of inventoryRows) {
-        if (remaining <= 0) break;
-
-        const availableInWarehouse = Number(stockRow.stock_quantity);
-        const takeQty = Math.min(remaining, availableInWarehouse);
-
-        if (takeQty > 0) {
-          allocationRows.push({
-            order_id: Number(order_id),
-            product_id: Number(item.product_id),
-            product_name: item.product_name,
-            warehouse_id: Number(stockRow.warehouse_id),
-            allocated_quantity: takeQty,
-          });
-          remaining -= takeQty;
-        }
-      }
+      allocationRows.push({
+        order_id: Number(order_id),
+        product_id: Number(item.product_id),
+        product_name: item.product_name,
+        warehouse_id: regionWarehouse.warehouse_id,
+        allocated_quantity: Number(item.quantity),
+      });
     }
 
     // Fetch manual ID as legacy schema lacks SERIAL sequence
-    const maxDelRes = await client.query(
-      "SELECT COALESCE(MAX(delivery_id), 0) + 1 AS next_id FROM delivery",
-    );
+    const maxDelRes = await client.query(SQL.q_0055);
     const next_delivery_id = maxDelRes.rows[0].next_id;
 
-    const primaryWarehouseId =
-      preferredWarehouseId || allocationRows[0]?.warehouse_id || null;
+    const primaryWarehouseId = regionWarehouse.warehouse_id;
 
-    await client.query(
-      `
-      INSERT INTO delivery (delivery_id, order_id, rider_id, delivery_status, warehouse_id, assigned_at)
-      VALUES ($1, $2, $3, 'assigned', $4, NOW())
-      `,
-      [next_delivery_id, order_id, rider_id, primaryWarehouseId],
-    );
-
-    const touchedProducts = new Set();
+    await client.query(SQL.q_0056, [
+      next_delivery_id,
+      order_id,
+      rider_id,
+      primaryWarehouseId,
+    ]);
 
     for (const row of allocationRows) {
-      const reduceStockRes = await client.query(
-        `
-        UPDATE inventory
-        SET stock_quantity = stock_quantity - $1,
-            last_updated = NOW()
-        WHERE product_id = $2
-          AND warehouse_id = $3
-          AND stock_quantity >= $1
-        `,
-        [row.allocated_quantity, row.product_id, row.warehouse_id],
-      );
-
-      if (reduceStockRes.rowCount === 0) {
-        await client.query("ROLLBACK");
-        return res.status(409).json({
-          error: "Inventory changed while assigning. Please retry assignment.",
-        });
-      }
-
-      await client.query(
-        `
-        INSERT INTO delivery_inventory_allocation
-          (delivery_id, order_id, product_id, warehouse_id, allocated_quantity)
-        VALUES ($1, $2, $3, $4, $5)
-        `,
-        [
-          next_delivery_id,
-          row.order_id,
-          row.product_id,
-          row.warehouse_id,
-          row.allocated_quantity,
-        ],
-      );
-
-      touchedProducts.add(row.product_id);
+      await client.query(SQL.q_0059, [
+        next_delivery_id,
+        row.order_id,
+        row.product_id,
+        row.warehouse_id,
+        row.allocated_quantity,
+      ]);
     }
 
-    for (const productId of touchedProducts) {
-      await syncProductStockTotal(client, productId);
-    }
+    await client.query(SQL.q_0060, [order_id]);
 
-    await client.query(
-      "UPDATE orders SET order_status = 'assigned' WHERE order_id = $1",
-      [order_id],
-    );
-
-    await client.query("COMMIT");
+    await client.query(SQL.q_0061);
 
     res.json({
       message: "Order assigned successfully",
@@ -1082,8 +910,10 @@ exports.selfAssignOrder = async (req, res) => {
     });
   } catch (err) {
     console.error("Assign error details:", err);
-    await client.query("ROLLBACK");
-    res.status(500).json({ error: "Assignment failed" });
+    await client.query(SQL.q_0062);
+    res
+      .status(err.status || 500)
+      .json({ error: err.message || "Assignment failed" });
   } finally {
     client.release();
   }
@@ -1095,23 +925,14 @@ exports.startDelivery = async (req, res) => {
     const { order_id } = req.params;
     const rider_id = req.user.id;
 
-    const check = await db.query(
-      "SELECT * FROM delivery WHERE order_id = $1 AND rider_id = $2",
-      [order_id, rider_id],
-    );
+    const check = await db.query(SQL.q_0011, [order_id, rider_id]);
 
     if (check.rows.length === 0)
       return res.status(403).json({ error: "Not your order" });
 
-    await db.query(
-      "UPDATE orders SET order_status = 'delivering' WHERE order_id = $1",
-      [order_id],
-    );
+    await db.query(SQL.q_0012, [order_id]);
 
-    await db.query(
-      "UPDATE delivery SET delivery_status = 'delivering' WHERE order_id = $1",
-      [order_id],
-    );
+    await db.query(SQL.q_0013, [order_id]);
 
     res.json({ message: "Delivery started" });
   } catch (e) {
@@ -1138,18 +959,12 @@ exports.completeDelivery = async (req, res) => {
 
     await ensurePaymentConfirmationTable();
 
-    const check = await db.query(
-      "SELECT * FROM delivery WHERE order_id = $1 AND rider_id = $2",
-      [order_id, rider_id],
-    );
+    const check = await db.query(SQL.q_0014, [order_id, rider_id]);
 
     if (check.rows.length === 0)
       return res.status(403).json({ error: "Not your order" });
 
-    const orderRes = await db.query(
-      "SELECT * FROM orders WHERE order_id = $1",
-      [order_id],
-    );
+    const orderRes = await db.query(SQL.q_0015, [order_id]);
 
     if (orderRes.rows.length === 0) {
       return res.status(404).json({ error: "Order not found" });
@@ -1161,43 +976,23 @@ exports.completeDelivery = async (req, res) => {
       return res.status(400).json({ error: "Invalid status" });
     }
 
-    await db.query(
-      `
-      UPDATE orders 
-      SET order_status = 'delivered',
-          payment_status = CASE 
-            WHEN payment_status = 'paid' THEN 'paid'
-            ELSE 'collected'
-          END
-      WHERE order_id = $1
-      `,
-      [order_id],
-    );
+    await db.query(SQL.q_0016, [order_id]);
 
-    await db.query(
-      `
-      UPDATE delivery 
-      SET delivery_status = 'delivered',
-          delivered_at = NOW()
-      WHERE order_id = $1
-      `,
-      [order_id],
-    );
+    await db.query(SQL.q_0017, [order_id]);
 
-    await db.query(
-      `
-      INSERT INTO rider_payment_confirmation (order_id, rider_id, rider_message, sent_at, admin_confirmed_at, admin_confirmed_by)
-      VALUES ($1, $2, $3, NOW(), NULL, NULL)
-      ON CONFLICT (order_id)
-      DO UPDATE
-      SET rider_id = EXCLUDED.rider_id,
-          rider_message = EXCLUDED.rider_message,
-          sent_at = NOW(),
-          admin_confirmed_at = NULL,
-          admin_confirmed_by = NULL
-      `,
-      [order_id, rider_id, String(payment_confirmation_message).trim()],
-    );
+    const paymentUpsertRes = await db.query(SQL.q_0018, [
+      order_id,
+      rider_id,
+      String(payment_confirmation_message).trim(),
+    ]);
+
+    if (paymentUpsertRes.rowCount === 0) {
+      await db.query(SQL.q_0018_insert, [
+        order_id,
+        rider_id,
+        String(payment_confirmation_message).trim(),
+      ]);
+    }
 
     let emailStatus = {
       sent: false,
@@ -1242,10 +1037,7 @@ exports.confirmPayment = async (req, res) => {
 
     await ensurePaymentConfirmationTable();
 
-    const orderRes = await db.query(
-      "SELECT * FROM orders WHERE order_id = $1",
-      [order_id],
-    );
+    const orderRes = await db.query(SQL.q_0019, [order_id]);
 
     const order = orderRes.rows[0];
 
@@ -1263,10 +1055,7 @@ exports.confirmPayment = async (req, res) => {
       });
     }
 
-    const paymentConfirmationRes = await db.query(
-      "SELECT * FROM rider_payment_confirmation WHERE order_id = $1",
-      [order_id],
-    );
+    const paymentConfirmationRes = await db.query(SQL.q_0020, [order_id]);
 
     if (paymentConfirmationRes.rows.length === 0) {
       return res.status(400).json({
@@ -1274,20 +1063,9 @@ exports.confirmPayment = async (req, res) => {
       });
     }
 
-    await db.query(
-      "UPDATE orders SET payment_status = 'paid' WHERE order_id = $1",
-      [order_id],
-    );
+    await db.query(SQL.q_0021, [order_id]);
 
-    await db.query(
-      `
-      UPDATE rider_payment_confirmation
-      SET admin_confirmed_at = NOW(),
-          admin_confirmed_by = $2
-      WHERE order_id = $1
-      `,
-      [order_id, req.user.id],
-    );
+    await db.query(SQL.q_0022, [order_id, req.user.id]);
 
     res.json({ message: "Payment confirmed" });
   } catch (e) {

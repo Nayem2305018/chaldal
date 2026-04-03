@@ -1,0 +1,4 @@
+-- Controller: cart
+-- File: functions.sql
+-- PostgreSQL: no custom functions required.
+-- Analytics-only policy: keep DB functions under admin analytics artifacts.

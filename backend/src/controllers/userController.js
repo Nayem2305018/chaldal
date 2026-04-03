@@ -1,16 +1,16 @@
-﻿/**
+/**
  * User Controller
  * Handles user-profile related API responses and user data operations.
+ * SQL artifacts: backend/sql/controllers/user/{queries,functions,procedures,triggers}.sql
  */
 const db = require("../db");
 
+const { getSql } = require("../utils/sqlFileLoader");
+const SQL = getSql("user");
 exports.getProfile = async (req, res) => {
   try {
     const userId = req.user.id;
-    const result = await db.query(
-      "SELECT user_id, name, email, phone, created_at FROM users WHERE user_id = $1",
-      [userId]
-    );
+    const result = await db.query(SQL.q_0001, [userId]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: "User not found" });
@@ -28,29 +28,20 @@ exports.updateProfile = async (req, res) => {
     const userId = req.user.id;
     const { name, phone } = req.body;
 
-    const result = await db.query(
-      `
-      UPDATE users 
-      SET name = COALESCE($1, name), 
-          phone = COALESCE($2, phone)
-      WHERE user_id = $3
-      RETURNING user_id, name, email, phone
-      `,
-      [name, phone, userId]
-    );
+    const result = await db.query(SQL.q_0002, [name, phone, userId]);
 
-    if (result.rows.length === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).json({ error: "User not found" });
     }
 
+    const updatedUser = await db.query(SQL.q_0003, [userId]);
+
     res.json({
       message: "Profile updated successfully",
-      user: result.rows[0]
+      user: updatedUser.rows[0],
     });
   } catch (error) {
     console.error("Error updating user profile:", error);
     res.status(500).json({ error: "Internal Server Error" });
   }
 };
-
-

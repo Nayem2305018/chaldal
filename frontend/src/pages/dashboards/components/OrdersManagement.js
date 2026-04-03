@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import api from "../../../services/api";
 
 const OrdersManagement = () => {
@@ -6,18 +6,24 @@ const OrdersManagement = () => {
   const [filter, setFilter] = useState("All");
   const [confirmingOrderId, setConfirmingOrderId] = useState(null);
 
-  const fetchOrders = async () => {
+  const fetchOrders = useCallback(async () => {
     try {
       const res = await api.get("/admin/orders");
       setOrders(res.data);
     } catch (err) {
       console.error(err);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchOrders();
-  }, []);
+
+    const intervalId = setInterval(() => {
+      fetchOrders();
+    }, 10000);
+
+    return () => clearInterval(intervalId);
+  }, [fetchOrders]);
 
   const handleConfirmPayment = async (orderId) => {
     setConfirmingOrderId(orderId);
@@ -41,6 +47,22 @@ const OrdersManagement = () => {
   return (
     <div>
       <h2 style={{ marginTop: 0 }}>Orders & Dispatch 🚚</h2>
+
+      <div style={{ marginBottom: "12px" }}>
+        <button
+          onClick={fetchOrders}
+          style={{
+            padding: "8px 12px",
+            borderRadius: "6px",
+            border: "1px solid #ccc",
+            background: "#fff",
+            cursor: "pointer",
+            fontWeight: "bold",
+          }}
+        >
+          Refresh Orders
+        </button>
+      </div>
 
       <div style={{ marginBottom: "20px" }}>
         <strong>Filter by Status: </strong>

@@ -89,7 +89,11 @@ const InventoryManagement = () => {
               borderRadius: "8px",
             }}
           >
-            <strong>{warehouse.warehouse_name}</strong>: {warehouse.total_stock}
+            <strong>
+              {warehouse.warehouse_name}
+              {warehouse.region_name ? ` (${warehouse.region_name})` : ""}
+            </strong>
+            : {warehouse.total_stock}
           </div>
         ))}
       </div>
@@ -101,7 +105,10 @@ const InventoryManagement = () => {
             <th>Name</th>
             <th>Total Stock</th>
             {warehouseTotals.map((warehouse) => (
-              <th key={warehouse.warehouse_id}>{warehouse.warehouse_name}</th>
+              <th key={warehouse.warehouse_id}>
+                {warehouse.warehouse_name}
+                {warehouse.region_name ? ` (${warehouse.region_name})` : ""}
+              </th>
             ))}
           </tr>
         </thead>

@@ -1,10 +1,28 @@
-﻿/**
+/**
  * Auth Controller
  * Handles signup, login, token verification, and role-aware authentication flows.
+ * SQL artifacts: backend/sql/controllers/auth/{queries,functions,procedures,triggers}.sql
  */
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const db = require("../db");
+
+const { getSql } = require("../utils/sqlFileLoader");
+const SQL = getSql("auth");
+const { ensureRegionSchema } = require("../utils/regionService");
+
+const EMAIL_LOOKUP_SQL_BY_TABLE = {
+  users: SQL.lookup_users_by_email,
+  rider: SQL.lookup_rider_by_email,
+  admin: SQL.lookup_admin_by_email,
+};
+
+const EMAIL_EXISTS_SQL_BY_TABLE = {
+  users: SQL.exists_users_by_email,
+  rider: SQL.exists_rider_by_email,
+  admin: SQL.exists_admin_by_email,
+  rider_requests: SQL.exists_rider_requests_by_email,
+};
 
 const isRecoverableAuthSchemaError = (error) => {
   // 42P01: undefined_table, 42703: undefined_column
@@ -20,9 +38,12 @@ const findUserByEmail = async (email) => {
 
   for (const { table, role } of tablePriority) {
     try {
-      const result = await db.query(`SELECT * FROM ${table} WHERE email = $1`, [
-        email,
-      ]);
+      const queryText = EMAIL_LOOKUP_SQL_BY_TABLE[table];
+      if (!queryText) {
+        continue;
+      }
+
+      const result = await db.query(queryText, [email]);
       if (result.rows.length > 0) {
         return { user: result.rows[0], userRole: role };
       }
@@ -40,10 +61,12 @@ const findUserByEmail = async (email) => {
 
 const safeEmailExists = async (tableName, email) => {
   try {
-    const result = await db.query(
-      `SELECT 1 FROM ${tableName} WHERE email = $1`,
-      [email],
-    );
+    const queryText = EMAIL_EXISTS_SQL_BY_TABLE[tableName];
+    if (!queryText) {
+      return false;
+    }
+
+    const result = await db.query(queryText, [email]);
     return result.rows.length > 0;
   } catch (error) {
     if (isRecoverableAuthSchemaError(error)) {
@@ -70,6 +93,7 @@ const generateToken = (id, role, email) => {
 exports.signup = async (req, res) => {
   try {
     const { name, email, password, phone, role, appointment_code } = req.body;
+    const regionId = Number(req.body.region_id);
 
     // Validate required fields
     if (!name || !email || !password || !phone || !role) {
@@ -83,6 +107,22 @@ exports.signup = async (req, res) => {
 
     if (role !== "user" && role !== "rider") {
       return res.status(400).json({ error: "Role must be 'user' or 'rider'" });
+    }
+
+    if (!Number.isInteger(regionId) || regionId <= 0) {
+      return res.status(400).json({
+        error: "A valid region_id is required for signup",
+      });
+    }
+
+    await ensureRegionSchema(db);
+
+    const regionExistsRes = await db.query(SQL.exists_region_by_id, [regionId]);
+
+    if (regionExistsRes.rows.length === 0) {
+      return res.status(400).json({
+        error: "Selected region_id does not exist",
+      });
     }
 
     // Check if email already exists across all auth-related tables
@@ -103,24 +143,19 @@ exports.signup = async (req, res) => {
 
     // SIGNUP LOGIC FOR USERS
     if (role === "user") {
-      const nextIdResult = await db.query(
-        "SELECT COALESCE(MAX(user_id), 0) + 1 AS next_id FROM users",
-      );
+      const nextIdResult = await db.query(SQL.q_0001);
       const nextId = nextIdResult.rows[0].next_id;
 
-      const insertQuery = `
-        INSERT INTO users (user_id, name, email, password_hash, phone, created_at) 
-        VALUES ($1, $2, $3, $4, $5, NOW()) 
-        RETURNING user_id, name, email, phone
-      `;
-
-      const newUser = await db.query(insertQuery, [
+      await db.query(SQL.insert_signup_user, [
         nextId,
         name,
         email,
         password_hash,
         phone,
+        regionId,
       ]);
+
+      const newUser = await db.query(SQL.select_signup_user_by_id, [nextId]);
 
       return res.status(201).json({
         message: "User signed up successfully. You can now login.",
@@ -138,20 +173,19 @@ exports.signup = async (req, res) => {
           .json({ error: "Appointment code is required for rider signup" });
       }
 
-      // Insert into rider_requests (NOT rider table)
-      const insertQuery = `
-        INSERT INTO rider_requests (name, email, password_hash, phone, appointment_code, status, created_at) 
-        VALUES ($1, $2, $3, $4, $5, 'pending', NOW()) 
-        RETURNING request_id, name, email, phone
-      `;
-
-      const newRequest = await db.query(insertQuery, [
+      await db.query(SQL.insert_signup_rider_request, [
         name,
         email,
         password_hash,
         phone,
         appointmentCode,
+        regionId,
       ]);
+
+      const newRequest = await db.query(
+        SQL.select_latest_rider_request_by_email,
+        [email],
+      );
 
       return res.status(201).json({
         message:
@@ -162,6 +196,19 @@ exports.signup = async (req, res) => {
   } catch (error) {
     console.error("Signup error:", error);
     res.status(500).json({ error: "Internal Server Error" });
+  }
+};
+
+exports.getRegions = async (req, res) => {
+  try {
+    await ensureRegionSchema(db);
+
+    const result = await db.query(SQL.select_regions);
+
+    return res.status(200).json({ regions: result.rows });
+  } catch (error) {
+    console.error("Get regions error:", error);
+    return res.status(500).json({ error: "Internal Server Error" });
   }
 };
 
@@ -259,6 +306,7 @@ exports.login = async (req, res) => {
         id: userId,
         name: displayName,
         email: user.email,
+        region_id: user.region_id || null,
       },
       redirectPath,
     });
@@ -268,9 +316,19 @@ exports.login = async (req, res) => {
   }
 };
 
-exports.logout = (req, res) => {
-  // JWT is stateless, so logout just requires client to remove token
-  res.status(200).json({ message: "Logged out successfully" });
+exports.logout = async (req, res) => {
+  try {
+    if (req.user?.role === "user" && Number.isInteger(Number(req.user.id))) {
+      await ensureRegionSchema(db);
+      await db.query(SQL.reset_user_region_on_logout, [Number(req.user.id)]);
+    }
+
+    // JWT is stateless, so logout mainly requires client to remove token.
+    return res.status(200).json({ message: "Logged out successfully" });
+  } catch (error) {
+    console.error("Logout error:", error);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
 };
 
 exports.verifyToken = (req, res) => {
@@ -280,5 +338,3 @@ exports.verifyToken = (req, res) => {
     user: req.user,
   });
 };
-
-

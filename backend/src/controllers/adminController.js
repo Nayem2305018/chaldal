@@ -1,14 +1,22 @@
 ﻿/**
  * Admin Controller
  * Handles admin dashboards, rider approvals, inventory updates, offers, and order management.
+ * SQL artifacts: backend/sql/controllers/admin/{queries,functions,procedures,triggers}.sql
  */
 const db = require("../db");
+const { getSql } = require("../utils/sqlFileLoader");
+const SQL = getSql("admin");
 const bcrypt = require("bcrypt");
 const {
   ensureOfferSchema,
   normalizeVoucherCode,
   roundMoney,
 } = require("../utils/offerService");
+const { ensureAnalyticsSchema } = require("../utils/analyticsService");
+const { ensureRegionSchema } = require("../utils/regionService");
+const {
+  ensureOrderAutomationSchema,
+} = require("../utils/orderAutomationService");
 
 let paymentConfirmationTableReady = false;
 let warehouseInventorySchemaReady = false;
@@ -216,16 +224,7 @@ const ensurePaymentConfirmationTable = async () => {
     return;
   }
 
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS rider_payment_confirmation (
-      order_id INT PRIMARY KEY REFERENCES orders(order_id) ON DELETE CASCADE,
-      rider_id INT NOT NULL REFERENCES rider(rider_id),
-      rider_message TEXT NOT NULL,
-      sent_at TIMESTAMP DEFAULT NOW(),
-      admin_confirmed_at TIMESTAMP,
-      admin_confirmed_by INT REFERENCES admin(admin_id)
-    )
-  `);
+  await db.query(SQL.q_0001);
 
   paymentConfirmationTableReady = true;
 };
@@ -235,59 +234,32 @@ const ensureWarehouseInventorySchema = async () => {
     return;
   }
 
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS delivery_inventory_allocation (
-      allocation_id SERIAL PRIMARY KEY,
-      delivery_id INT NOT NULL REFERENCES delivery(delivery_id) ON DELETE CASCADE,
-      order_id INT NOT NULL REFERENCES orders(order_id) ON DELETE CASCADE,
-      product_id INT NOT NULL REFERENCES product(product_id),
-      warehouse_id INT NOT NULL REFERENCES warehouse(warehouse_id),
-      allocated_quantity INT NOT NULL CHECK (allocated_quantity > 0),
-      created_at TIMESTAMP DEFAULT NOW()
-    )
-  `);
+  await ensureRegionSchema(db);
 
-  await db.query(
-    "CREATE UNIQUE INDEX IF NOT EXISTS ux_inventory_product_warehouse ON inventory(product_id, warehouse_id)",
-  );
+  await db.query(SQL.q_0002);
 
-  await db.query(`
-    INSERT INTO warehouse (warehouse_id, name, location)
-    VALUES
-      (1, 'Warehouse 1', 'Main Hub 1'),
-      (2, 'Warehouse 2', 'Main Hub 2'),
-      (3, 'Warehouse 3', 'Main Hub 3')
-    ON CONFLICT (warehouse_id) DO NOTHING
-  `);
+  await db.query(SQL.q_0003);
+
+  await db.query(SQL.q_0004);
 
   try {
-    const missingInventoryRows = await db.query(`
-      SELECT p.product_id, COALESCE(p.stock_quantity, 0)::INT AS stock_quantity
-      FROM product p
-      LEFT JOIN inventory i ON i.product_id = p.product_id
-      GROUP BY p.product_id, p.stock_quantity
-      HAVING COUNT(i.inventory_id) = 0
-    `);
+    const missingInventoryRows = await db.query(SQL.q_0005);
+    const warehousesRes = await db.query(SQL.q_0040);
+    const warehouses = warehousesRes.rows || [];
 
     for (const row of missingInventoryRows.rows) {
       const initialStock = Number(row.stock_quantity || 0);
-      if (initialStock <= 0) continue;
+      if (warehouses.length === 0) continue;
 
-      await db.query(
-        `
-        INSERT INTO inventory (inventory_id, product_id, warehouse_id, stock_quantity, last_updated)
-        VALUES (
-          (SELECT COALESCE(MAX(inventory_id), 0) + 1 FROM inventory),
-          $1,
-          1,
-          $2,
-          NOW()
-        )
-        ON CONFLICT (product_id, warehouse_id)
-        DO NOTHING
-        `,
-        [row.product_id, initialStock],
-      );
+      const safeStock = Math.max(0, initialStock);
+      const baseShare = Math.floor(safeStock / warehouses.length);
+      const remainder = safeStock % warehouses.length;
+
+      for (let index = 0; index < warehouses.length; index += 1) {
+        const warehouseId = Number(warehouses[index].warehouse_id);
+        const seededStock = baseShare + (index < remainder ? 1 : 0);
+        await db.query(SQL.q_0006, [row.product_id, warehouseId, seededStock]);
+      }
     }
   } catch (error) {
     if (error.code !== "42703") {
@@ -300,18 +272,7 @@ const ensureWarehouseInventorySchema = async () => {
 
 const syncProductStockTotal = async (productId) => {
   try {
-    await db.query(
-      `
-      UPDATE product
-      SET stock_quantity = (
-        SELECT COALESCE(SUM(stock_quantity), 0)
-        FROM inventory
-        WHERE product_id = $1
-      )
-      WHERE product_id = $1
-      `,
-      [productId],
-    );
+    await db.query(SQL.q_0007, [productId]);
   } catch (error) {
     if (error.code !== "42703") {
       throw error;
@@ -322,12 +283,9 @@ const syncProductStockTotal = async (productId) => {
 // Get all pending rider requests
 exports.getRiderRequests = async (req, res) => {
   try {
-    const result = await db.query(
-      `SELECT request_id, name, email, phone, appointment_code, status, created_at 
-       FROM rider_requests 
-       WHERE status = 'pending' 
-       ORDER BY created_at DESC`,
-    );
+    await ensureRegionSchema(db);
+
+    const result = await db.query(SQL.q_0008);
 
     res.status(200).json({
       message: "Rider requests retrieved",
@@ -344,15 +302,14 @@ exports.approveRider = async (req, res) => {
   try {
     const { request_id } = req.params;
 
+    await ensureRegionSchema(db);
+
     if (!request_id) {
       return res.status(400).json({ error: "Request ID is required" });
     }
 
     // Get rider request details
-    const requestResult = await db.query(
-      `SELECT * FROM rider_requests WHERE request_id = $1 AND status = 'pending'`,
-      [request_id],
-    );
+    const requestResult = await db.query(SQL.q_0009, [request_id]);
 
     if (requestResult.rows.length === 0) {
       return res
@@ -361,45 +318,32 @@ exports.approveRider = async (req, res) => {
     }
 
     const riderRequest = requestResult.rows[0];
+    const regionId = Number(riderRequest.region_id);
+
+    if (!Number.isInteger(regionId) || regionId <= 0) {
+      return res.status(400).json({
+        error: "Rider request must include a valid region_id",
+      });
+    }
 
     // Get next rider ID
-    const nextIdResult = await db.query(
-      "SELECT COALESCE(MAX(rider_id), 0) + 1 AS next_id FROM rider",
-    );
+    const nextIdResult = await db.query(SQL.q_0010);
     const nextRiderId = nextIdResult.rows[0].next_id;
 
-    // Insert into rider table
-    const insertRiderQuery = `
-      INSERT INTO rider (
-        rider_id, 
-        rider_name, 
-        email, 
-        password_hash, 
-        phone, 
-        appointment_code, 
-        current_status, 
-        created_at
-      ) 
-      VALUES ($1, $2, $3, $4, $5, $6, 'available', NOW()) 
-      RETURNING rider_id, rider_name, email, phone, current_status
-    `;
-
-    const newRider = await db.query(insertRiderQuery, [
+    await db.query(SQL.insert_approved_rider, [
       nextRiderId,
       riderRequest.name,
       riderRequest.email,
       riderRequest.password_hash,
       riderRequest.phone,
       riderRequest.appointment_code,
+      regionId,
     ]);
 
+    const newRider = await db.query(SQL.select_rider_by_id, [nextRiderId]);
+
     // Update rider request status to approved
-    await db.query(
-      `UPDATE rider_requests 
-       SET status = 'approved', reviewed_at = NOW(), reviewed_by = $1 
-       WHERE request_id = $2`,
-      [req.user.id, request_id],
-    );
+    await db.query(SQL.q_0011, [req.user.id, request_id]);
 
     res.status(200).json({
       message: "Rider approved successfully",
@@ -422,23 +366,21 @@ exports.rejectRider = async (req, res) => {
     }
 
     // Update rider request status to rejected
-    const result = await db.query(
-      `UPDATE rider_requests 
-       SET status = 'rejected', reviewed_at = NOW(), reviewed_by = $1 
-       WHERE request_id = $2 AND status = 'pending'
-       RETURNING request_id, name, email, status`,
-      [req.user.id, request_id],
-    );
+    const result = await db.query(SQL.q_0012, [req.user.id, request_id]);
 
-    if (result.rows.length === 0) {
+    if (result.rowCount === 0) {
       return res
         .status(404)
         .json({ error: "Rider request not found or already processed" });
     }
 
+    const requestRes = await db.query(SQL.select_rider_request_by_id, [
+      request_id,
+    ]);
+
     res.status(200).json({
       message: "Rider request rejected successfully",
-      request: result.rows[0],
+      request: requestRes.rows[0],
     });
   } catch (error) {
     console.error("Reject rider error:", error);
@@ -449,11 +391,7 @@ exports.rejectRider = async (req, res) => {
 // Get all riders (approved)
 exports.getAllRiders = async (req, res) => {
   try {
-    const result = await db.query(
-      `SELECT rider_id, rider_name, email, phone, current_status, created_at 
-       FROM rider 
-       ORDER BY created_at DESC`,
-    );
+    const result = await db.query(SQL.q_0013);
 
     res.status(200).json({
       message: "Riders retrieved",
@@ -468,11 +406,7 @@ exports.getAllRiders = async (req, res) => {
 // Get all users
 exports.getAllUsers = async (req, res) => {
   try {
-    const result = await db.query(
-      `SELECT user_id, name, email, phone, created_at 
-       FROM users 
-       ORDER BY created_at DESC`,
-    );
+    const result = await db.query(SQL.q_0014);
 
     res.status(200).json({
       message: "Users retrieved",
@@ -504,21 +438,17 @@ exports.updateRiderStatus = async (req, res) => {
         .json({ error: `Status must be one of: ${validStatuses.join(", ")}` });
     }
 
-    const result = await db.query(
-      `UPDATE rider 
-       SET current_status = $1 
-       WHERE rider_id = $2 
-       RETURNING rider_id, rider_name, email, current_status`,
-      [status, rider_id],
-    );
+    const result = await db.query(SQL.q_0015, [status, rider_id]);
 
-    if (result.rows.length === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).json({ error: "Rider not found" });
     }
 
+    const riderRes = await db.query(SQL.select_rider_status_by_id, [rider_id]);
+
     res.status(200).json({
       message: "Rider status updated",
-      rider: result.rows[0],
+      rider: riderRes.rows[0],
     });
   } catch (error) {
     console.error("Update rider status error:", error);
@@ -529,25 +459,130 @@ exports.updateRiderStatus = async (req, res) => {
 // Get dashboard statistics
 exports.getDashboardStats = async (req, res) => {
   try {
-    const usersCount = await db.query("SELECT COUNT(*) as count FROM users");
-    const ridersCount = await db.query("SELECT COUNT(*) as count FROM rider");
-    const pendingRequests = await db.query(
-      "SELECT COUNT(*) as count FROM rider_requests WHERE status = 'pending'",
-    );
-    const ordersCount = await db.query("SELECT COUNT(*) as count FROM orders");
-    const revenueRes = await db.query(`
-      SELECT COALESCE(SUM(total_price), 0) AS revenue
-      FROM orders
-      WHERE order_status = 'delivered'
-    `);
+    const safeQuery = async (sqlText, fallbackRows = []) => {
+      if (!sqlText || typeof sqlText !== "string") {
+        return { rows: fallbackRows };
+      }
+
+      try {
+        return await db.query(sqlText);
+      } catch (queryError) {
+        console.error("Dashboard analytics query failed:", queryError.message);
+        return { rows: fallbackRows };
+      }
+    };
+
+    try {
+      await ensureOfferSchema(db);
+    } catch (schemaError) {
+      console.error(
+        "Dashboard offer schema check failed:",
+        schemaError.message,
+      );
+    }
+
+    try {
+      await ensureAnalyticsSchema(db);
+    } catch (schemaError) {
+      console.error(
+        "Dashboard analytics schema check failed:",
+        schemaError.message,
+      );
+    }
+
+    const [
+      usersCount,
+      ridersCount,
+      pendingRequests,
+      ordersCount,
+      revenueRes,
+      lowStockRes,
+      discountProductsRes,
+      dailyRevenueRes,
+      monthlyRevenueSummaryRes,
+      monthlyRevenueTrendRes,
+      topSellingProductsRes,
+      mostActiveUsersRes,
+      riderPerformanceRes,
+      orderStatusDistributionRes,
+      peakOrderHoursRes,
+      warehouseWorkloadRes,
+      averageOrderValueRes,
+      monthlyReportRes,
+    ] = await Promise.all([
+      safeQuery(SQL.q_0016, [{ count: 0 }]),
+      safeQuery(SQL.q_0017, [{ count: 0 }]),
+      safeQuery(SQL.q_0018, [{ count: 0 }]),
+      safeQuery(SQL.q_0019, [{ count: 0 }]),
+      safeQuery(SQL.q_0020, [{ revenue: 0 }]),
+      safeQuery(SQL.q_0021, []),
+      safeQuery(SQL.q_0022),
+      safeQuery(SQL.q_0023),
+      safeQuery(SQL.q_0024, [
+        { month_start: null, total_revenue: 0, total_orders: 0 },
+      ]),
+      safeQuery(SQL.q_0067, []),
+      safeQuery(SQL.q_0025),
+      safeQuery(SQL.q_0026),
+      safeQuery(SQL.q_0027),
+      safeQuery(SQL.q_0028),
+      safeQuery(SQL.q_0029),
+      safeQuery(SQL.q_0030),
+      safeQuery(SQL.q_0031, [{ average_order_value: 0 }]),
+      safeQuery(SQL.q_0032, [{ report: {} }]),
+    ]);
+
+    const monthlySummary = monthlyRevenueSummaryRes.rows[0] || {
+      month_start: null,
+      total_revenue: 0,
+      total_orders: 0,
+    };
+
+    const dailyRevenue = (dailyRevenueRes.rows || []).map((row) => ({
+      revenue_date: row.revenue_date,
+      total_revenue: Number(row.total_revenue || 0),
+      total_orders: Number(row.total_orders || 0),
+    }));
+
+    const monthlyRevenueTrend = (monthlyRevenueTrendRes.rows || [])
+      .map((row) => ({
+        month_name: row.month_name,
+        month_key: row.month_key,
+        total_revenue: Number(roundMoney(row.total_revenue || 0)),
+        total_orders: Number(row.total_orders || 0),
+      }))
+      .sort((a, b) => String(b.month_key).localeCompare(String(a.month_key)));
+
+    const averageOrderValue =
+      averageOrderValueRes.rows[0]?.average_order_value ?? 0;
+    const monthlyReport = monthlyReportRes.rows[0]?.report || {};
 
     res.status(200).json({
       stats: {
-        totalUsers: parseInt(usersCount.rows[0].count),
-        totalRiders: parseInt(ridersCount.rows[0].count),
-        pendingRiderRequests: parseInt(pendingRequests.rows[0].count),
-        totalOrders: parseInt(ordersCount.rows[0].count),
-        totalRevenue: parseFloat(revenueRes.rows[0].revenue),
+        totalUsers: Number(usersCount.rows[0]?.count || 0),
+        totalRiders: Number(ridersCount.rows[0]?.count || 0),
+        pendingRiderRequests: Number(pendingRequests.rows[0]?.count || 0),
+        totalOrders: Number(ordersCount.rows[0]?.count || 0),
+        totalRevenue: Number(revenueRes.rows[0]?.revenue || 0),
+        lowStockProducts: lowStockRes.rows,
+        discount_products: discountProductsRes.rows,
+        analytics: {
+          dailyRevenue,
+          monthlyRevenueTrend,
+          monthlyRevenueSummary: {
+            month_start: monthlySummary.month_start,
+            total_revenue: Number(monthlySummary.total_revenue || 0),
+            total_orders: Number(monthlySummary.total_orders || 0),
+          },
+          topSellingProducts: topSellingProductsRes.rows,
+          mostActiveUsers: mostActiveUsersRes.rows,
+          riderPerformance: riderPerformanceRes.rows,
+          orderStatusDistribution: orderStatusDistributionRes.rows,
+          peakOrderHours: peakOrderHoursRes.rows,
+          warehouseWorkload: warehouseWorkloadRes.rows,
+          averageOrderValue: Number(averageOrderValue || 0),
+          monthlyReport,
+        },
       },
     });
   } catch (error) {
@@ -559,20 +594,15 @@ exports.createProduct = async (req, res) => {
   try {
     const { product_name, price, stock_quantity, category_id, photourl } =
       req.body;
-    const resultId = await db.query(
-      "SELECT COALESCE(MAX(product_id), 0) + 1 AS next_id FROM product",
-    );
-    await db.query(
-      "INSERT INTO product (product_id, product_name, price, stock_quantity, category_id, photourl) VALUES ($1, $2, $3, $4, $5, $6)",
-      [
-        resultId.rows[0].next_id,
-        product_name,
-        price,
-        stock_quantity || 0,
-        category_id,
-        photourl || "",
-      ],
-    );
+    const resultId = await db.query(SQL.q_0033);
+    await db.query(SQL.q_0034, [
+      resultId.rows[0].next_id,
+      product_name,
+      price,
+      stock_quantity || 0,
+      category_id,
+      photourl || "",
+    ]);
     res.json({ message: "Product created successfully" });
   } catch (err) {
     res.status(500).json({ error: "Failed to create product" });
@@ -583,17 +613,14 @@ exports.updateProduct = async (req, res) => {
   try {
     const { product_name, price, stock_quantity, category_id, photourl } =
       req.body;
-    await db.query(
-      "UPDATE product SET product_name = COALESCE($1, product_name), price = COALESCE($2, price), stock_quantity = COALESCE($3, stock_quantity), category_id = COALESCE($4, category_id), photourl = COALESCE($5, photourl) WHERE product_id = $6",
-      [
-        product_name,
-        price,
-        stock_quantity,
-        category_id,
-        photourl,
-        req.params.id,
-      ],
-    );
+    await db.query(SQL.q_0035, [
+      product_name,
+      price,
+      stock_quantity,
+      category_id,
+      photourl,
+      req.params.id,
+    ]);
     res.json({ message: "Product updated successfully" });
   } catch (err) {
     res.status(500).json({ error: "Failed to update product" });
@@ -602,9 +629,7 @@ exports.updateProduct = async (req, res) => {
 
 exports.deleteProduct = async (req, res) => {
   try {
-    await db.query("DELETE FROM product WHERE product_id = $1", [
-      req.params.id,
-    ]);
+    await db.query(SQL.q_0036, [req.params.id]);
     res.json({ message: "Product deleted successfully" });
   } catch (err) {
     res.status(500).json({ error: "Failed to delete product" });
@@ -617,50 +642,7 @@ exports.getOrders = async (req, res) => {
     await ensurePaymentConfirmationTable();
     await ensureWarehouseInventorySchema();
 
-    const result = await db.query(`
-      SELECT 
-        o.*, 
-        d.rider_id, 
-        d.warehouse_id, 
-        d.delivery_status,
-        rpc.rider_message AS rider_payment_message,
-        rpc.sent_at AS rider_payment_sent_at,
-        rpc.admin_confirmed_at,
-        rpc.admin_confirmed_by,
-        (
-          SELECT COALESCE(
-            json_agg(
-              json_build_object(
-                'warehouse_id', dia.warehouse_id,
-                'product_id', dia.product_id,
-                'product_name', p2.product_name,
-                'allocated_quantity', dia.allocated_quantity
-              )
-              ORDER BY dia.warehouse_id, dia.product_id
-            ),
-            '[]'::json
-          )
-          FROM delivery_inventory_allocation dia
-          JOIN product p2 ON p2.product_id = dia.product_id
-          WHERE dia.order_id = o.order_id
-        ) AS warehouse_allocations,
-        (
-          SELECT json_agg(
-            json_build_object(
-              'product_name', p.product_name,
-              'quantity', oi.quantity,
-              'unit_price', oi.unit_price
-            )
-          )
-          FROM order_item oi
-          JOIN product p ON oi.product_id = p.product_id
-          WHERE oi.order_id = o.order_id
-        ) AS items
-      FROM orders o 
-      LEFT JOIN delivery d ON o.order_id = d.order_id 
-      LEFT JOIN rider_payment_confirmation rpc ON rpc.order_id = o.order_id
-      ORDER BY o.order_date DESC
-    `);
+    const result = await db.query(SQL.q_0037);
     res.json(result.rows);
   } catch (err) {
     console.error("Get orders error:", err);
@@ -670,10 +652,7 @@ exports.getOrders = async (req, res) => {
 
 exports.updateOrder = async (req, res) => {
   try {
-    await db.query("UPDATE orders SET order_status = $1 WHERE order_id = $2", [
-      req.body.status,
-      req.params.id,
-    ]);
+    await db.query(SQL.q_0038, [req.body.status, req.params.id]);
     res.json({ message: "Order updated successfully" });
   } catch (err) {
     res.status(500).json({ error: "Failed to update order status" });
@@ -684,42 +663,9 @@ exports.getInventorySummary = async (req, res) => {
   try {
     await ensureWarehouseInventorySchema();
 
-    const productsRes = await db.query(`
-      SELECT
-        p.product_id,
-        p.product_name,
-        p.price,
-        COALESCE(SUM(i.stock_quantity), 0)::INT AS total_stock,
-        COALESCE(
-          json_agg(
-            json_build_object(
-              'warehouse_id', w.warehouse_id,
-              'warehouse_name', w.name,
-              'stock_quantity', COALESCE(i.stock_quantity, 0)::INT
-            )
-            ORDER BY w.warehouse_id
-          ) FILTER (WHERE w.warehouse_id IS NOT NULL),
-          '[]'::json
-        ) AS warehouses
-      FROM product p
-      CROSS JOIN warehouse w
-      LEFT JOIN inventory i
-        ON i.product_id = p.product_id
-       AND i.warehouse_id = w.warehouse_id
-      GROUP BY p.product_id, p.product_name, p.price
-      ORDER BY p.product_id
-    `);
+    const productsRes = await db.query(SQL.q_0039);
 
-    const warehouseTotalsRes = await db.query(`
-      SELECT
-        w.warehouse_id,
-        w.name AS warehouse_name,
-        COALESCE(SUM(i.stock_quantity), 0)::INT AS total_stock
-      FROM warehouse w
-      LEFT JOIN inventory i ON i.warehouse_id = w.warehouse_id
-      GROUP BY w.warehouse_id, w.name
-      ORDER BY w.warehouse_id
-    `);
+    const warehouseTotalsRes = await db.query(SQL.q_0040);
 
     const overallTotalStock = warehouseTotalsRes.rows.reduce(
       (sum, row) => sum + Number(row.total_stock),
@@ -757,41 +703,31 @@ exports.updateInventoryStock = async (req, res) => {
       });
     }
 
-    const productRes = await db.query(
-      "SELECT product_id FROM product WHERE product_id = $1",
-      [productId],
-    );
+    const productRes = await db.query(SQL.q_0041, [productId]);
 
     if (productRes.rows.length === 0) {
       return res.status(404).json({ error: "Product not found" });
     }
 
-    const warehouseRes = await db.query(
-      "SELECT warehouse_id FROM warehouse WHERE warehouse_id = $1",
-      [warehouseId],
-    );
+    const warehouseRes = await db.query(SQL.q_0042, [warehouseId]);
 
     if (warehouseRes.rows.length === 0) {
       return res.status(404).json({ error: "Warehouse not found" });
     }
 
-    await db.query(
-      `
-      INSERT INTO inventory (inventory_id, product_id, warehouse_id, last_updated, stock_quantity)
-      VALUES (
-        (SELECT COALESCE(MAX(inventory_id), 0) + 1 FROM inventory),
-        $1,
-        $2,
-        NOW(),
-        $3
-      )
-      ON CONFLICT (product_id, warehouse_id)
-      DO UPDATE
-      SET stock_quantity = EXCLUDED.stock_quantity,
-          last_updated = NOW()
-      `,
-      [productId, warehouseId, stockQuantity],
-    );
+    const updateRes = await db.query(SQL.q_0043, [
+      productId,
+      warehouseId,
+      stockQuantity,
+    ]);
+
+    if (updateRes.rowCount === 0) {
+      await db.query(SQL.q_0043_insert, [
+        productId,
+        warehouseId,
+        stockQuantity,
+      ]);
+    }
 
     await syncProductStockTotal(productId);
 
@@ -808,10 +744,7 @@ exports.confirmPayment = async (req, res) => {
 
     await ensurePaymentConfirmationTable();
 
-    const orderRes = await db.query(
-      "SELECT * FROM orders WHERE order_id = $1",
-      [orderId],
-    );
+    const orderRes = await db.query(SQL.q_0044, [orderId]);
 
     if (orderRes.rows.length === 0) {
       return res.status(404).json({ error: "Order not found" });
@@ -829,10 +762,13 @@ exports.confirmPayment = async (req, res) => {
       return res.status(400).json({ error: "Payment already confirmed" });
     }
 
-    const paymentConfirmationRes = await db.query(
-      "SELECT order_id FROM rider_payment_confirmation WHERE order_id = $1",
-      [orderId],
-    );
+    if (order.payment_status !== "collected") {
+      return res.status(400).json({
+        error: "Payment can only be confirmed after rider collection",
+      });
+    }
+
+    const paymentConfirmationRes = await db.query(SQL.q_0045, [orderId]);
 
     if (paymentConfirmationRes.rows.length === 0) {
       return res.status(400).json({
@@ -840,20 +776,9 @@ exports.confirmPayment = async (req, res) => {
       });
     }
 
-    await db.query(
-      "UPDATE orders SET payment_status = 'paid' WHERE order_id = $1",
-      [orderId],
-    );
+    await db.query(SQL.q_0046, [orderId]);
 
-    await db.query(
-      `
-      UPDATE rider_payment_confirmation
-      SET admin_confirmed_at = NOW(),
-          admin_confirmed_by = $2
-      WHERE order_id = $1
-      `,
-      [orderId, req.user.id],
-    );
+    await db.query(SQL.q_0047, [orderId, req.user.id]);
 
     res.json({ message: "Payment confirmed" });
   } catch (err) {
@@ -864,17 +789,21 @@ exports.confirmPayment = async (req, res) => {
 
 exports.assignRider = async (req, res) => {
   try {
+    await ensureOrderAutomationSchema(db);
+
     const { order_id, rider_id } = req.body;
     // Step 1: Push a delivery request explicitly bound to the specific order mapping natively matching database IDs dynamically.
-    const deliveryInsert = await db.query(
-      "INSERT INTO delivery (order_id, status) VALUES ($1, $2) RETURNING delivery_id",
-      [order_id, "Assigned to Rider"],
-    );
+    await db.query(SQL.q_0048, [order_id, "Assigned to Rider"]);
+
+    const deliveryInsert = await db.query(SQL.select_delivery_by_order_id, [
+      order_id,
+    ]);
+
+    if (deliveryInsert.rows.length === 0) {
+      throw new Error("Failed to resolve created delivery_id");
+    }
     // Step 2: Establish Rider relation binding assignments formally natively mapping constraints securely to avoid collisions dynamically globally.
-    await db.query(
-      "INSERT INTO rider_ride (rider_id, delivery_id) VALUES ($1, $2)",
-      [rider_id, deliveryInsert.rows[0].delivery_id],
-    );
+    await db.query(SQL.q_0049, [rider_id, deliveryInsert.rows[0].delivery_id]);
     res.json({ message: "Rider assigned and scheduled successfully" });
   } catch (err) {
     console.error(err);
@@ -894,54 +823,30 @@ exports.createVoucherOffer = async (req, res) => {
       return res.status(400).json({ error });
     }
 
-    const duplicateRes = await db.query(
-      "SELECT voucher_id FROM vouchers WHERE UPPER(code) = UPPER($1)",
-      [payload.code],
-    );
+    const duplicateRes = await db.query(SQL.q_0050, [payload.code]);
 
     if (duplicateRes.rows.length > 0) {
       return res.status(409).json({ error: "Voucher code already exists" });
     }
 
-    const maxIdRes = await db.query(
-      "SELECT COALESCE(MAX(voucher_id), 0) + 1 AS next_id FROM vouchers",
-    );
+    const maxIdRes = await db.query(SQL.q_0051);
     const voucherId = Number(maxIdRes.rows[0].next_id);
 
-    const insertRes = await db.query(
-      `
-      INSERT INTO vouchers (
-        voucher_id,
-        code,
-        discount_type,
-        discount_value,
-        min_order_amount,
-        max_discount_amount,
-        usage_limit_per_user,
-        start_at,
-        end_at,
-        is_active,
-        created_by_admin,
-        created_at,
-        updated_at
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
-      RETURNING *
-      `,
-      [
-        voucherId,
-        payload.code,
-        payload.discount_type,
-        payload.discount_value,
-        payload.min_order_amount,
-        payload.max_discount_amount,
-        payload.usage_limit_per_user,
-        payload.start_at,
-        payload.end_at,
-        payload.is_active,
-        req.user.id,
-      ],
-    );
+    await db.query(SQL.q_0052, [
+      voucherId,
+      payload.code,
+      payload.discount_type,
+      payload.discount_value,
+      payload.min_order_amount,
+      payload.max_discount_amount,
+      payload.usage_limit_per_user,
+      payload.start_at,
+      payload.end_at,
+      payload.is_active,
+      req.user.id,
+    ]);
+
+    const insertRes = await db.query(SQL.q_0054, [voucherId]);
 
     return res.status(201).json({
       message: "Voucher created successfully",
@@ -957,21 +862,7 @@ exports.getVoucherOffers = async (req, res) => {
   try {
     await ensureOfferSchema(db);
 
-    const result = await db.query(`
-      SELECT
-        v.*,
-        COALESCE(COUNT(vuh.usage_id), 0)::INT AS usage_count_total,
-        CASE
-          WHEN v.is_active = FALSE THEN FALSE
-          WHEN v.start_at IS NOT NULL AND v.start_at > NOW() THEN FALSE
-          WHEN v.end_at IS NOT NULL AND v.end_at < NOW() THEN FALSE
-          ELSE TRUE
-        END AS currently_applicable
-      FROM vouchers v
-      LEFT JOIN voucher_usage_history vuh ON vuh.voucher_id = v.voucher_id
-      GROUP BY v.voucher_id
-      ORDER BY v.created_at DESC, v.voucher_id DESC
-    `);
+    const result = await db.query(SQL.q_0053);
 
     return res.json({ vouchers: result.rows });
   } catch (error) {
@@ -989,10 +880,7 @@ exports.updateVoucherOffer = async (req, res) => {
       return res.status(400).json({ error: "Invalid voucher_id" });
     }
 
-    const existingRes = await db.query(
-      "SELECT * FROM vouchers WHERE voucher_id = $1",
-      [voucherId],
-    );
+    const existingRes = await db.query(SQL.q_0054, [voucherId]);
 
     if (existingRes.rows.length === 0) {
       return res.status(404).json({ error: "Voucher not found" });
@@ -1006,49 +894,34 @@ exports.updateVoucherOffer = async (req, res) => {
       return res.status(400).json({ error });
     }
 
-    const duplicateRes = await db.query(
-      "SELECT voucher_id FROM vouchers WHERE UPPER(code) = UPPER($1) AND voucher_id <> $2",
-      [payload.code, voucherId],
-    );
+    const duplicateRes = await db.query(SQL.q_0055, [payload.code, voucherId]);
 
     if (duplicateRes.rows.length > 0) {
       return res.status(409).json({ error: "Voucher code already exists" });
     }
 
-    const updateRes = await db.query(
-      `
-      UPDATE vouchers
-      SET
-        code = $1,
-        discount_type = $2,
-        discount_value = $3,
-        min_order_amount = $4,
-        max_discount_amount = $5,
-        usage_limit_per_user = $6,
-        start_at = $7,
-        end_at = $8,
-        is_active = $9,
-        updated_at = NOW()
-      WHERE voucher_id = $10
-      RETURNING *
-      `,
-      [
-        payload.code,
-        payload.discount_type,
-        payload.discount_value,
-        payload.min_order_amount,
-        payload.max_discount_amount,
-        payload.usage_limit_per_user,
-        payload.start_at,
-        payload.end_at,
-        payload.is_active,
-        voucherId,
-      ],
-    );
+    const updateRes = await db.query(SQL.q_0056, [
+      payload.code,
+      payload.discount_type,
+      payload.discount_value,
+      payload.min_order_amount,
+      payload.max_discount_amount,
+      payload.usage_limit_per_user,
+      payload.start_at,
+      payload.end_at,
+      payload.is_active,
+      voucherId,
+    ]);
+
+    if (updateRes.rowCount === 0) {
+      return res.status(404).json({ error: "Voucher not found" });
+    }
+
+    const updatedVoucher = await db.query(SQL.q_0054, [voucherId]);
 
     return res.json({
       message: "Voucher updated successfully",
-      voucher: updateRes.rows[0],
+      voucher: updatedVoucher.rows[0],
     });
   } catch (error) {
     console.error("Update voucher offer error:", error);
@@ -1071,24 +944,17 @@ exports.setVoucherOfferActive = async (req, res) => {
       return res.status(400).json({ error: "is_active must be true or false" });
     }
 
-    const updateRes = await db.query(
-      `
-      UPDATE vouchers
-      SET is_active = $1,
-          updated_at = NOW()
-      WHERE voucher_id = $2
-      RETURNING *
-      `,
-      [isActive, voucherId],
-    );
+    const updateRes = await db.query(SQL.q_0057, [isActive, voucherId]);
 
-    if (updateRes.rows.length === 0) {
+    if (updateRes.rowCount === 0) {
       return res.status(404).json({ error: "Voucher not found" });
     }
 
+    const updatedVoucher = await db.query(SQL.q_0054, [voucherId]);
+
     return res.json({
       message: `Voucher ${isActive ? "activated" : "deactivated"} successfully`,
-      voucher: updateRes.rows[0],
+      voucher: updatedVoucher.rows[0],
     });
   } catch (error) {
     console.error("Set voucher active error:", error);
@@ -1116,30 +982,9 @@ exports.getVoucherUsageHistory = async (req, res) => {
         .json({ error: "voucher_id must be a positive integer" });
     }
 
-    const result = await db.query(
-      `
-      SELECT
-        vuh.usage_id,
-        vuh.voucher_id,
-        vuh.voucher_code,
-        vuh.user_id,
-        u.name AS user_name,
-        u.email AS user_email,
-        vuh.order_id,
-        o.order_date,
-        vuh.discount_amount,
-        vuh.used_at
-      FROM voucher_usage_history vuh
-      JOIN users u ON u.user_id = vuh.user_id
-      JOIN orders o ON o.order_id = vuh.order_id
-      WHERE ($1::INT IS NULL OR vuh.voucher_id = $1)
-      ORDER BY vuh.used_at DESC, vuh.usage_id DESC
-      LIMIT $2
-      `,
-      [voucherId, limit],
-    );
+    const result = await db.query(SQL.q_0058, [voucherId]);
 
-    return res.json({ usage_history: result.rows });
+    return res.json({ usage_history: result.rows.slice(0, limit) });
   } catch (error) {
     console.error("Get voucher usage history error:", error);
     return res
@@ -1157,50 +1002,28 @@ exports.createProductDiscountOffer = async (req, res) => {
       return res.status(400).json({ error });
     }
 
-    const productRes = await db.query(
-      "SELECT product_id FROM product WHERE product_id = $1",
-      [payload.product_id],
-    );
+    const productRes = await db.query(SQL.q_0059, [payload.product_id]);
 
     if (productRes.rows.length === 0) {
       return res.status(404).json({ error: "Product not found" });
     }
 
-    const maxIdRes = await db.query(
-      "SELECT COALESCE(MAX(product_discount_id), 0) + 1 AS next_id FROM product_discounts",
-    );
+    const maxIdRes = await db.query(SQL.q_0060);
     const productDiscountId = Number(maxIdRes.rows[0].next_id);
 
-    const insertRes = await db.query(
-      `
-      INSERT INTO product_discounts (
-        product_discount_id,
-        product_id,
-        discount_type,
-        discount_value,
-        max_discount_amount,
-        start_at,
-        end_at,
-        is_active,
-        created_by_admin,
-        created_at,
-        updated_at
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
-      RETURNING *
-      `,
-      [
-        productDiscountId,
-        payload.product_id,
-        payload.discount_type,
-        payload.discount_value,
-        payload.max_discount_amount,
-        payload.start_at,
-        payload.end_at,
-        payload.is_active,
-        req.user.id,
-      ],
-    );
+    await db.query(SQL.q_0061, [
+      productDiscountId,
+      payload.product_id,
+      payload.discount_type,
+      payload.discount_value,
+      payload.max_discount_amount,
+      payload.start_at,
+      payload.end_at,
+      payload.is_active,
+      req.user.id,
+    ]);
+
+    const insertRes = await db.query(SQL.q_0063, [productDiscountId]);
 
     return res.status(201).json({
       message: "Product discount created successfully",
@@ -1216,22 +1039,12 @@ exports.getProductDiscountOffers = async (req, res) => {
   try {
     await ensureOfferSchema(db);
 
-    const result = await db.query(`
-      SELECT
-        pd.*,
-        p.product_name,
-        CASE
-          WHEN pd.is_active = FALSE THEN FALSE
-          WHEN pd.start_at IS NOT NULL AND pd.start_at > NOW() THEN FALSE
-          WHEN pd.end_at IS NOT NULL AND pd.end_at < NOW() THEN FALSE
-          ELSE TRUE
-        END AS currently_applicable
-      FROM product_discounts pd
-      JOIN product p ON p.product_id = pd.product_id
-      ORDER BY pd.created_at DESC, pd.product_discount_id DESC
-    `);
+    const result = await db.query(SQL.q_0062);
 
-    return res.json({ discounts: result.rows });
+    return res.json({
+      discounts: result.rows,
+      discount_products: result.rows,
+    });
   } catch (error) {
     console.error("Get product discounts error:", error);
     return res.status(500).json({ error: "Failed to fetch product discounts" });
@@ -1247,10 +1060,7 @@ exports.updateProductDiscountOffer = async (req, res) => {
       return res.status(400).json({ error: "Invalid product_discount_id" });
     }
 
-    const existingRes = await db.query(
-      "SELECT * FROM product_discounts WHERE product_discount_id = $1",
-      [productDiscountId],
-    );
+    const existingRes = await db.query(SQL.q_0063, [productDiscountId]);
 
     if (existingRes.rows.length === 0) {
       return res.status(404).json({ error: "Product discount not found" });
@@ -1264,45 +1074,32 @@ exports.updateProductDiscountOffer = async (req, res) => {
       return res.status(400).json({ error });
     }
 
-    const productRes = await db.query(
-      "SELECT product_id FROM product WHERE product_id = $1",
-      [payload.product_id],
-    );
+    const productRes = await db.query(SQL.q_0064, [payload.product_id]);
 
     if (productRes.rows.length === 0) {
       return res.status(404).json({ error: "Product not found" });
     }
 
-    const updateRes = await db.query(
-      `
-      UPDATE product_discounts
-      SET
-        product_id = $1,
-        discount_type = $2,
-        discount_value = $3,
-        max_discount_amount = $4,
-        start_at = $5,
-        end_at = $6,
-        is_active = $7,
-        updated_at = NOW()
-      WHERE product_discount_id = $8
-      RETURNING *
-      `,
-      [
-        payload.product_id,
-        payload.discount_type,
-        payload.discount_value,
-        payload.max_discount_amount,
-        payload.start_at,
-        payload.end_at,
-        payload.is_active,
-        productDiscountId,
-      ],
-    );
+    const updateRes = await db.query(SQL.q_0065, [
+      payload.product_id,
+      payload.discount_type,
+      payload.discount_value,
+      payload.max_discount_amount,
+      payload.start_at,
+      payload.end_at,
+      payload.is_active,
+      productDiscountId,
+    ]);
+
+    if (updateRes.rowCount === 0) {
+      return res.status(404).json({ error: "Product discount not found" });
+    }
+
+    const updatedDiscount = await db.query(SQL.q_0063, [productDiscountId]);
 
     return res.json({
       message: "Product discount updated successfully",
-      discount: updateRes.rows[0],
+      discount: updatedDiscount.rows[0],
     });
   } catch (error) {
     console.error("Update product discount error:", error);
@@ -1325,24 +1122,17 @@ exports.setProductDiscountOfferActive = async (req, res) => {
       return res.status(400).json({ error: "is_active must be true or false" });
     }
 
-    const updateRes = await db.query(
-      `
-      UPDATE product_discounts
-      SET is_active = $1,
-          updated_at = NOW()
-      WHERE product_discount_id = $2
-      RETURNING *
-      `,
-      [isActive, productDiscountId],
-    );
+    const updateRes = await db.query(SQL.q_0066, [isActive, productDiscountId]);
 
-    if (updateRes.rows.length === 0) {
+    if (updateRes.rowCount === 0) {
       return res.status(404).json({ error: "Product discount not found" });
     }
 
+    const updatedDiscount = await db.query(SQL.q_0063, [productDiscountId]);
+
     return res.json({
       message: `Product discount ${isActive ? "activated" : "deactivated"} successfully`,
-      discount: updateRes.rows[0],
+      discount: updatedDiscount.rows[0],
     });
   } catch (error) {
     console.error("Set product discount active error:", error);

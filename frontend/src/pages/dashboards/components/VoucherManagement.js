@@ -94,7 +94,11 @@ const VoucherManagement = () => {
         Array.isArray(vouchersRes?.vouchers) ? vouchersRes.vouchers : [],
       );
       setProductDiscounts(
-        Array.isArray(discountsRes?.discounts) ? discountsRes.discounts : [],
+        Array.isArray(discountsRes?.discounts)
+          ? discountsRes.discounts
+          : Array.isArray(discountsRes?.discount_products)
+            ? discountsRes.discount_products
+            : [],
       );
       setUsageHistory(
         Array.isArray(usageRes?.usage_history) ? usageRes.usage_history : [],

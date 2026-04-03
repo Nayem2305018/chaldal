@@ -86,6 +86,16 @@ export const verifyToken = async (token) => {
   }
 };
 
+export const fetchSignupRegions = async () => {
+  try {
+    const response = await api.get("/auth/regions");
+    return response.data;
+  } catch (error) {
+    console.error("Signup regions fetch error:", error);
+    throw error;
+  }
+};
+
 // ============ Products Endpoints ============
 
 export const fetchProducts = async () => {
@@ -173,6 +183,26 @@ export const previewOrderPricing = async (payload = {}) => {
     return response.data;
   } catch (error) {
     console.error("Order pricing preview error:", error);
+    throw error;
+  }
+};
+
+export const revalidateCartByRegion = async (payload) => {
+  try {
+    const response = await api.post("/order/revalidate-region", payload);
+    return response.data;
+  } catch (error) {
+    console.error("Cart region revalidation error:", error);
+    throw error;
+  }
+};
+
+export const fetchOrderRegions = async () => {
+  try {
+    const response = await api.get("/order/regions");
+    return response.data;
+  } catch (error) {
+    console.error("Order regions fetch error:", error);
     throw error;
   }
 };

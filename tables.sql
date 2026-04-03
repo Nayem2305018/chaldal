@@ -175,4 +175,4 @@ CREATE TABLE rider_payout (
     payout_status VARCHAR(50),
     FOREIGN KEY (rider_id) REFERENCES rider(rider_id)
 );
-DROP
+

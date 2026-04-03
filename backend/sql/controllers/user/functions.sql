@@ -1,0 +1,3 @@
+-- Controller: user
+-- File: functions.sql
+-- PostgreSQL: no custom functions required by current runtime.
