@@ -1,4 +1,4 @@
-﻿-- Controller: cart
+-- Controller: cart
 -- File: queries.sql
 -- Runtime PostgreSQL query registry loaded by backend/src/utils/sqlFileLoader.js
 -- Used by backend/src/controllers/cartController.js; fetches active cart/cart_item rows with product details, stock, price snapshots, and computed cart totals.
@@ -294,7 +294,7 @@ on i.product_id = ci.product_id
    and c.status = 'active';
 
 -- context: cart ordinary query
--- functionality: Fetches the signed-in user's default operating region.
+-- functionality: Fetches the signed-in user's active region used for cart stock checks.
 -- name: q_0020
 -- used-by: backend/src/controllers/cartController.js -> no direct exports.<fn>() reference found
 -- touches: users

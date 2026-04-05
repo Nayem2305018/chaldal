@@ -52,7 +52,8 @@ const persistRegionInAuthUser = (regionId) => {
 };
 
 const CheckoutPage = () => {
-  const { cart, totalPrice, loadCart } = useCart();
+  const { cart, totalPrice, loadCart, isCartLoading, isCartMutating } =
+    useCart();
   const [formData, setFormData] = useState({
     delivery_address: "",
     preferred_delivery_time: "",
@@ -302,6 +303,18 @@ const CheckoutPage = () => {
       finalTotal,
     };
   }, [pricing, totalPrice]);
+
+  const pricingRequiredButMissing =
+    cart.items.length > 0 && pricing === null && !pricingLoading;
+  const blockPayAction =
+    loading ||
+    cart.items.length === 0 ||
+    regionSyncing ||
+    pricingLoading ||
+    regionsLoading ||
+    isCartLoading ||
+    isCartMutating ||
+    pricingRequiredButMissing;
 
   const handleProceed = async (e) => {
     e.preventDefault();
@@ -595,28 +608,37 @@ const CheckoutPage = () => {
 
           <button
             type="submit"
-            disabled={loading || cart.items.length === 0 || regionSyncing}
+            disabled={blockPayAction}
             style={{
               marginTop: "10px",
               padding: "15px",
-              background: "#27ae60",
+              background: blockPayAction ? "#9aa0a6" : "#27ae60",
               color: "white",
               border: "none",
               borderRadius: "5px",
               fontWeight: "bold",
               fontSize: "1.1rem",
-              cursor:
-                loading || cart.items.length === 0 || regionSyncing
-                  ? "not-allowed"
-                  : "pointer",
-              opacity:
-                loading || cart.items.length === 0 || regionSyncing ? 0.7 : 1,
+              cursor: blockPayAction ? "not-allowed" : "pointer",
+              opacity: blockPayAction ? 0.85 : 1,
             }}
           >
             {loading
               ? "Processing..."
               : `Pay BDT ${formatMoney(totals.finalTotal)}`}
           </button>
+
+          {(isCartLoading ||
+            isCartMutating ||
+            pricingLoading ||
+            regionSyncing) && (
+            <p style={{ margin: 0, color: "#666", fontSize: "0.9rem" }}>
+              {regionSyncing
+                ? "Revalidating stock for selected region..."
+                : pricingLoading
+                  ? "Calculating latest price..."
+                  : "Syncing cart updates before payment..."}
+            </p>
+          )}
         </form>
       </div>
 
@@ -753,11 +775,16 @@ const CheckoutPage = () => {
             ৳ {formatMoney(totals.finalTotal)}
           </span>
         </div>
-        {(pricingLoading || regionSyncing) && (
+        {(pricingLoading ||
+          regionSyncing ||
+          isCartLoading ||
+          isCartMutating) && (
           <p style={{ marginTop: "10px", color: "#777", fontSize: "0.9rem" }}>
             {regionSyncing
               ? "Revalidating selected region stock..."
-              : "Recalculating offers..."}
+              : pricingLoading
+                ? "Recalculating offers..."
+                : "Refreshing cart data..."}
           </p>
         )}
       </div>

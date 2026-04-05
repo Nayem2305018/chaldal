@@ -23,7 +23,6 @@ begin
 	  from product p
 	 where p.product_id = new.product_id
 for update;
-
 	if new.quantity > v_available_stock then
 		raise exception 'Sorry! limited quantity available';
 	end if;

@@ -241,20 +241,22 @@ const calculateCartPricing = async ({
     const discountRows = discountMap.get(Number(item.product_id)) || [];
     const lineBaseTotal = roundMoney(baseUnitPrice * quantity);
 
-    // Apply product discount on the full line total so max_discount_amount acts as a hard cap per line item.
+    // Product discount terms are unit-based; compute per-unit discount and scale by quantity.
     let bestDiscount = null;
     for (const row of discountRows) {
-      const discountAmount = computeDiscountAmount(
-        lineBaseTotal,
+      const unitDiscountAmount = computeDiscountAmount(
+        baseUnitPrice,
         row.discount_type,
         row.discount_value,
         row.max_discount_amount,
       );
+      const lineDiscountAmount = roundMoney(unitDiscountAmount * quantity);
 
-      if (!bestDiscount || discountAmount > bestDiscount.discount_amount) {
+      if (!bestDiscount || lineDiscountAmount > bestDiscount.discount_amount) {
         bestDiscount = {
           ...row,
-          discount_amount: discountAmount,
+          unit_discount_amount: unitDiscountAmount,
+          discount_amount: lineDiscountAmount,
         };
       }
     }
@@ -263,8 +265,9 @@ const calculateCartPricing = async ({
       Number(bestDiscount?.discount_amount || 0),
     );
     const lineTotal = roundMoney(lineBaseTotal - lineProductDiscountTotal);
-    const productDiscountPerUnit =
-      quantity > 0 ? roundMoney(lineProductDiscountTotal / quantity) : 0;
+    const productDiscountPerUnit = roundMoney(
+      Number(bestDiscount?.unit_discount_amount || 0),
+    );
     const effectiveUnitPrice =
       quantity > 0 ? roundMoney(lineTotal / quantity) : 0;
 

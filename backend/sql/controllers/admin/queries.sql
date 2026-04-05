@@ -388,27 +388,35 @@ select coalesce(
 -- functionality: Executes SQL block 'q_0021' for admin controller runtime.
 -- name: q_0021 low stock quantity products
 -- used-by: backend/src/controllers/adminController.js -> exports.getDashboardStats()
--- touches: inventory, product
+-- touches: inventory, product, warehouse, region
 select p.product_id,
-       p.product_name,
-       cast(coalesce(
-          sum(i.stock_quantity),
-          0
-       ) as int) as stock_quantity
-  from product p
-  left join inventory i
-on i.product_id = p.product_id
- group by p.product_id,
-          p.product_name
-having coalesce(
-   sum(i.stock_quantity),
-   0
+          p.product_name,
+          w.warehouse_id,
+          w.region_id,
+          r.region_name,
+          w.name as warehouse_name,
+          cast(coalesce(
+               i.stock_quantity,
+               0
+          ) as int) as stock_quantity
+   from inventory i
+   join product p
+on p.product_id = i.product_id
+   join warehouse w
+on w.warehouse_id = i.warehouse_id
+   left join region r
+on r.region_id = w.region_id
+ where coalesce(
+    i.stock_quantity,
+    0
 ) < 10
- order by stock_quantity asc;
+ order by stock_quantity asc,
+               p.product_name asc,
+               w.warehouse_id asc;
 
 -- context: admin ordinary query
 -- functionality: Executes SQL block 'q_0022' for admin controller runtime.
--- name: q_0022 discount product results
+-- name: q_0022 discount product results 
 -- used-by: backend/src/controllers/adminController.js -> exports.getDashboardStats()
 -- touches: product, product_discounts
 select pd.product_discount_id,
@@ -450,8 +458,6 @@ on p.product_id = pd.product_id
      2)) as discount_amount
 ) calc
  where pd.is_active = true
-   and ( pd.start_at is null
-    or pd.start_at <= now() )
    and ( pd.end_at is null
     or pd.end_at >= now() )
  order by calc.discount_amount desc;
@@ -562,6 +568,7 @@ select analytics_monthly_report_json(current_date) as report;
 -- used-by: backend/src/controllers/adminController.js -> exports.createProduct()
 -- touches: product
 select coalesce(
+   
    max(product_id),
    0
 ) + 1 as next_id
@@ -1084,9 +1091,6 @@ select pd.*,
        case
           when pd.is_active = false then
              false
-          when pd.start_at is not null
-             and pd.start_at > now() then
-             false
           when pd.end_at is not null
              and pd.end_at < now() then
              false
@@ -1142,3 +1146,15 @@ update product_discounts
    set is_active = $1,
        updated_at = now()
  where product_discount_id = $2;
+
+-- context: admin ordinary query
+-- functionality: Auto-deactivates product discounts that have passed end_at.
+-- name: q_0068
+-- used-by: backend/src/controllers/adminController.js -> exports.getProductDiscountOffers()
+-- touches: product_discounts
+update product_discounts
+   set is_active = false,
+       updated_at = now()
+ where is_active = true
+   and end_at is not null
+   and end_at < now();

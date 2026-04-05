@@ -477,8 +477,6 @@ select product_discount_id,
   from product_discounts
  where product_id = any ( $1 )
    and is_active = true
-   and ( start_at is null
-    or start_at <= now() )
    and ( end_at is null
     or end_at >= now() );
 
@@ -795,7 +793,8 @@ rollback;
 
 -- context: order ordinary query
 -- functionality: Executes SQL block 'q_0044' for order controller runtime.
--- name: q_0044
+-- name: q_0044 
+-- locks the order record for update to prevent concurrent modifications during self-assignment.
 -- used-by: backend/src/controllers/orderController.js -> exports.selfAssignOrder()
 -- touches: orders
 select *

@@ -394,7 +394,7 @@ const DashboardOverview = () => {
         </table>
       )}
 
-      <h3>⚠️ Low Stock Alerts ( &lt; 10 items )</h3>
+      <h3>⚠️ Low Stock Alerts By Region ( &lt; 10 items )</h3>
       {stats.lowStockProducts.length === 0 ? (
         <div
           style={{
@@ -412,14 +412,20 @@ const DashboardOverview = () => {
             <tr>
               <th>ID</th>
               <th>Product Name</th>
+              <th>Region</th>
+              <th>Warehouse</th>
               <th>Current Stock</th>
             </tr>
           </thead>
           <tbody>
             {stats.lowStockProducts.map((p) => (
-              <tr key={p.product_id}>
+              <tr
+                key={`${p.product_id}-${p.warehouse_id || p.region_id || "na"}`}
+              >
                 <td>#{p.product_id}</td>
                 <td>{p.product_name}</td>
+                <td>{p.region_name || "Unassigned Region"}</td>
+                <td>{p.warehouse_name || "N/A"}</td>
                 <td style={{ color: "#e74c3c", fontWeight: "bold" }}>
                   {p.stock_quantity} remaining
                 </td>

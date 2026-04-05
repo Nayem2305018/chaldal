@@ -490,6 +490,15 @@ exports.getDashboardStats = async (req, res) => {
       );
     }
 
+    try {
+      await ensureWarehouseInventorySchema();
+    } catch (schemaError) {
+      console.error(
+        "Dashboard warehouse inventory schema check failed:",
+        schemaError.message,
+      );
+    }
+
     const [
       usersCount,
       ridersCount,
@@ -794,7 +803,6 @@ exports.assignRider = async (req, res) => {
     const { order_id, rider_id } = req.body;
     // Step 1: Push a delivery request explicitly bound to the specific order mapping natively matching database IDs dynamically.
     await db.query(SQL.q_0048, [order_id, "Assigned to Rider"]);
-
     const deliveryInsert = await db.query(SQL.select_delivery_by_order_id, [
       order_id,
     ]);
@@ -1038,6 +1046,8 @@ exports.createProductDiscountOffer = async (req, res) => {
 exports.getProductDiscountOffers = async (req, res) => {
   try {
     await ensureOfferSchema(db);
+
+    await db.query(SQL.q_0068);
 
     const result = await db.query(SQL.q_0062);
 

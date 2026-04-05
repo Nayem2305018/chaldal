@@ -55,8 +55,6 @@ select p.*,
      from product_discounts pd
     where pd.product_id = p.product_id
       and pd.is_active = true
-      and ( pd.start_at is null
-       or pd.start_at <= now() )
       and ( pd.end_at is null
        or pd.end_at >= now() )
       and pd.product_discount_id = (
@@ -64,8 +62,6 @@ select p.*,
         from product_discounts pd2
        where pd2.product_id = p.product_id
          and pd2.is_active = true
-         and ( pd2.start_at is null
-          or pd2.start_at <= now() )
          and ( pd2.end_at is null
           or pd2.end_at >= now() )
    )
@@ -125,8 +121,6 @@ select p.*,
      from product_discounts pd
     where pd.product_id = p.product_id
       and pd.is_active = true
-      and ( pd.start_at is null
-       or pd.start_at <= now() )
       and ( pd.end_at is null
        or pd.end_at >= now() )
       and pd.product_discount_id = (
@@ -134,8 +128,6 @@ select p.*,
         from product_discounts pd2
        where pd2.product_id = p.product_id
          and pd2.is_active = true
-         and ( pd2.start_at is null
-          or pd2.start_at <= now() )
          and ( pd2.end_at is null
           or pd2.end_at >= now() )
    )
@@ -196,8 +188,6 @@ select p.*,
      from product_discounts pd
     where pd.product_id = p.product_id
       and pd.is_active = true
-      and ( pd.start_at is null
-       or pd.start_at <= now() )
       and ( pd.end_at is null
        or pd.end_at >= now() )
       and pd.product_discount_id = (
@@ -205,8 +195,6 @@ select p.*,
         from product_discounts pd2
        where pd2.product_id = p.product_id
          and pd2.is_active = true
-         and ( pd2.start_at is null
-          or pd2.start_at <= now() )
          and ( pd2.end_at is null
           or pd2.end_at >= now() )
    )

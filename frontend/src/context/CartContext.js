@@ -7,31 +7,79 @@ import React, {
   useCallback,
 } from "react";
 import { fetchCart, updateCartItem, placeOrder } from "../services/api";
+import { useAuth } from "./AuthContext";
 
 const CartContext = createContext();
 
 const outOfStockMessage = "Product is out of stock.";
-const limitedStockMessage = "Sorry! limited quantity available";
+const limitedStockMessage = "Sorry! Limited quantity available";
+const emptyCartState = { items: [], cart_id: null };
+
+const getKnownStockQuantity = (...candidates) => {
+  for (const value of candidates) {
+    const numericValue = Number(value);
+    if (Number.isFinite(numericValue) && numericValue >= 0) {
+      return numericValue;
+    }
+  }
+
+  return null;
+};
+
+const normalizeCartErrorMessage = (message) => {
+  const normalized = String(message || "").toLowerCase();
+
+  if (normalized.includes("limited quantity")) {
+    return limitedStockMessage;
+  }
+
+  if (normalized.includes("out of stock")) {
+    return outOfStockMessage;
+  }
+
+  return message || "Failed to update cart";
+};
 
 export const useCart = () => useContext(CartContext);
 
 export const CartProvider = ({ children }) => {
-  const [cart, setCart] = useState({ items: [], cart_id: null });
+  const { user, isAuthenticated, loading: authLoading, userRole } = useAuth();
+  const [cart, setCart] = useState(emptyCartState);
   const [isOpen, setIsOpen] = useState(false);
+  const [loadInFlightCount, setLoadInFlightCount] = useState(0);
+  const [mutationInFlightCount, setMutationInFlightCount] = useState(0);
   const mutationQueueRef = useRef(new Map());
   const mutationVersionRef = useRef(new Map());
   const loadRequestRef = useRef(0);
+  const cartRef = useRef(emptyCartState);
+
+  const isCartLoading = loadInFlightCount > 0;
+  const isCartMutating = mutationInFlightCount > 0;
 
   const applyServerCart = (data) => {
     if (!data) return;
-    setCart({
+    const nextCart = {
       cart_id: data.cart_id ?? null,
       items: Array.isArray(data.items) ? data.items : [],
-    });
+    };
+    cartRef.current = nextCart;
+    setCart(nextCart);
   };
+
+  const resetCartState = useCallback(() => {
+    loadRequestRef.current += 1;
+    mutationQueueRef.current = new Map();
+    mutationVersionRef.current = new Map();
+    setLoadInFlightCount(0);
+    setMutationInFlightCount(0);
+    setIsOpen(false);
+    cartRef.current = emptyCartState;
+    setCart(emptyCartState);
+  }, []);
 
   const loadCart = useCallback(async () => {
     const requestId = ++loadRequestRef.current;
+    setLoadInFlightCount((count) => count + 1);
 
     try {
       const data = await fetchCart();
@@ -40,37 +88,59 @@ export const CartProvider = ({ children }) => {
       }
     } catch (err) {
       console.error("Could not load cart");
+    } finally {
+      setLoadInFlightCount((count) => Math.max(0, count - 1));
     }
   }, []);
 
   useEffect(() => {
-    // Only load if logged in
-    const user = localStorage.getItem("auth_user");
-    if (user) {
-      loadCart();
+    if (authLoading) {
+      return;
     }
-  }, [loadCart]);
+
+    if (!isAuthenticated || userRole === "admin" || userRole === "rider") {
+      resetCartState();
+      return;
+    }
+
+    loadCart();
+  }, [
+    authLoading,
+    isAuthenticated,
+    userRole,
+    user?.id,
+    user?.region_id,
+    loadCart,
+    resetCartState,
+  ]);
 
   const changeQuantity = async (productId, change, fallbackItem = {}) => {
-    if (!Number.isFinite(change) || change === 0) {
+    const numericChange = Number(change);
+
+    if (!Number.isFinite(numericChange) || numericChange === 0) {
       return { success: false, error: "Invalid quantity change" };
     }
 
-    const currentItemSnapshot = cart.items.find(
+    const currentItemSnapshot = cartRef.current.items.find(
       (i) => i.product_id === productId,
     );
     const currentQuantity = Number(currentItemSnapshot?.quantity || 0);
-    const knownStockRaw =
-      currentItemSnapshot?.stock_quantity ?? fallbackItem?.stock_quantity;
-    const knownStock = Number(knownStockRaw);
-    const hasKnownStock = Number.isFinite(knownStock);
+    const knownStock = getKnownStockQuantity(
+      currentItemSnapshot?.stock_quantity,
+      currentItemSnapshot?.available_quantity,
+      currentItemSnapshot?.fallback_stock_quantity,
+      fallbackItem?.stock_quantity,
+      fallbackItem?.available_quantity,
+      fallbackItem?.fallback_stock_quantity,
+    );
+    const hasKnownStock = knownStock !== null;
 
-    if (change > 0 && hasKnownStock) {
+    if (numericChange > 0 && hasKnownStock) {
       if (knownStock <= 0) {
         return { success: false, error: outOfStockMessage };
       }
 
-      if (currentQuantity + Number(change) > knownStock) {
+      if (currentQuantity + numericChange > knownStock) {
         return { success: false, error: limitedStockMessage };
       }
     }
@@ -89,7 +159,7 @@ export const CartProvider = ({ children }) => {
       let nextItems = [...prev.items];
 
       if (currentItem) {
-        const newQuantity = Number(currentItem.quantity) + Number(change);
+        const newQuantity = Number(currentItem.quantity) + numericChange;
         if (newQuantity <= 0) {
           nextItems = nextItems.filter((i) => i.product_id !== productId);
         } else {
@@ -106,33 +176,43 @@ export const CartProvider = ({ children }) => {
                   ...i,
                   quantity: newQuantity,
                   price: unitPrice,
-                  stock_quantity: i.stock_quantity,
+                  stock_quantity: getKnownStockQuantity(
+                    i.stock_quantity,
+                    fallbackItem.stock_quantity,
+                  ),
                   line_total: lineTotal,
                 }
               : i,
           );
         }
-      } else if (change > 0) {
+      } else if (numericChange > 0) {
         const unitPrice = Number(fallbackItem.price ?? 0);
-        const quantity = Number(change);
+        const quantity = numericChange;
         nextItems.push({
           product_id: productId,
           product_name: fallbackItem.product_name,
           photourl: fallbackItem.photourl,
           unit: fallbackItem.unit,
-          stock_quantity: fallbackItem.stock_quantity,
+          stock_quantity: getKnownStockQuantity(
+            fallbackItem.stock_quantity,
+            fallbackItem.available_quantity,
+            fallbackItem.fallback_stock_quantity,
+          ),
           quantity,
           price: unitPrice,
           line_total: Number((quantity * unitPrice).toFixed(2)),
         });
       }
 
-      return { ...prev, items: nextItems };
+      const nextCart = { ...prev, items: nextItems };
+      cartRef.current = nextCart;
+      return nextCart;
     });
 
     const executeMutation = async () => {
+      setMutationInFlightCount((count) => count + 1);
       try {
-        const response = await updateCartItem(productId, change);
+        const response = await updateCartItem(productId, numericChange);
 
         const latestVersion = mutationVersionRef.current.get(productId) || 0;
         const isLatest = latestVersion === mutationVersion;
@@ -157,8 +237,10 @@ export const CartProvider = ({ children }) => {
         }
 
         await loadCart();
-        const msg = err.response?.data?.error || "Failed to update cart";
+        const msg = normalizeCartErrorMessage(err.response?.data?.error);
         return { success: false, error: msg };
+      } finally {
+        setMutationInFlightCount((count) => Math.max(0, count - 1));
       }
     };
 
@@ -181,7 +263,8 @@ export const CartProvider = ({ children }) => {
   const checkout = async () => {
     try {
       await placeOrder();
-      setCart({ items: [], cart_id: null });
+      cartRef.current = emptyCartState;
+      setCart(emptyCartState);
       setIsOpen(false);
       alert("Order placed successfully!");
     } catch (err) {
@@ -214,6 +297,8 @@ export const CartProvider = ({ children }) => {
         totalItems,
         totalPrice,
         loadCart,
+        isCartLoading,
+        isCartMutating,
       }}
     >
       {children}

@@ -13,7 +13,7 @@ let cartPricingColumnsReady = false;
 const outOfStockMessage = "Product is out of stock.";
 const limitedStockMessage = "Sorry! limited quantity available";
 
-const getUserRegionId = async (userId) => {
+const getUserActiveRegionId = async (userId) => {
   const regionRes = await db.query(SQL.q_0020, [userId]);
   const regionId = Number(regionRes.rows[0]?.region_id);
 
@@ -55,7 +55,7 @@ exports.getCart = async (req, res) => {
     await ensureRegionSchema(db);
 
     const userId = req.user.id;
-    const regionId = await getUserRegionId(userId);
+    const regionId = await getUserActiveRegionId(userId);
 
     if (!regionId) {
       return res.status(400).json({
@@ -102,7 +102,7 @@ exports.addToCart = async (req, res) => {
     const userId = req.user.id;
     const { product_id } = req.params;
     const quantityToAdd = Number(req.body.quantity || 1);
-    const regionId = await getUserRegionId(userId);
+    const regionId = await getUserActiveRegionId(userId);
 
     if (!regionId) {
       return res.status(400).json({
@@ -233,7 +233,7 @@ exports.updateCartItem = async (req, res) => {
     const userId = req.user.id;
     const { item_id } = req.params;
     const { quantity } = req.body;
-    const configuredRegionId = await getUserRegionId(userId);
+    const configuredRegionId = await getUserActiveRegionId(userId);
 
     if (!configuredRegionId) {
       return res.status(400).json({

@@ -221,9 +221,10 @@ exports.login = async (req, res) => {
     }
 
     const { user, userRole } = await findUserByEmail(email);
+    let resolvedUser = user;
 
     // User not found
-    if (!user) {
+    if (!resolvedUser) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
@@ -231,35 +232,43 @@ exports.login = async (req, res) => {
     let passwordMatch = false;
 
     if (userRole === "admin") {
-      if (user.password_hash) {
+      if (resolvedUser.password_hash) {
         try {
-          passwordMatch = await bcrypt.compare(password, user.password_hash);
+          passwordMatch = await bcrypt.compare(
+            password,
+            resolvedUser.password_hash,
+          );
         } catch (err) {
-          passwordMatch = password === user.password_hash;
+          passwordMatch = password === resolvedUser.password_hash;
         }
       }
 
-      if (!passwordMatch && user.password) {
-        passwordMatch = password === user.password;
+      if (!passwordMatch && resolvedUser.password) {
+        passwordMatch = password === resolvedUser.password;
       }
     } else if (userRole === "user" || userRole === "rider") {
       // User & Rider: try bcrypt comparison first, then fallback to plain text if necessary
-      if (!user.password_hash && !user.password) {
+      if (!resolvedUser.password_hash && !resolvedUser.password) {
         return res.status(401).json({ error: "Invalid credentials" });
       }
 
       try {
-        if (user.password_hash) {
-          passwordMatch = await bcrypt.compare(password, user.password_hash);
+        if (resolvedUser.password_hash) {
+          passwordMatch = await bcrypt.compare(
+            password,
+            resolvedUser.password_hash,
+          );
         }
       } catch (err) {
         // Fallback to plain text check if bcrypt fails or hash is missing
-        passwordMatch = password === (user.password_hash || user.password);
+        passwordMatch =
+          password === (resolvedUser.password_hash || resolvedUser.password);
       }
 
       // Final strict fallback for plain text if bcrypt didn't match
       if (!passwordMatch) {
-        passwordMatch = password === (user.password_hash || user.password);
+        passwordMatch =
+          password === (resolvedUser.password_hash || resolvedUser.password);
       }
     }
 
@@ -270,11 +279,24 @@ exports.login = async (req, res) => {
     // Determine user ID based on table
     let userId;
     if (userRole === "user") {
-      userId = user.user_id;
+      userId = resolvedUser.user_id;
     } else if (userRole === "rider") {
-      userId = user.rider_id;
+      userId = resolvedUser.rider_id;
     } else if (userRole === "admin") {
-      userId = user.admin_id;
+      userId = resolvedUser.admin_id;
+    }
+
+    // Reset active region from home region at login so a new session always starts with home stock rules.
+    if (userRole === "user" && Number.isInteger(Number(userId))) {
+      await ensureRegionSchema(db);
+      await db.query(SQL.reset_user_region_on_logout, [Number(userId)]);
+
+      const refreshedUserRes = await db.query(SQL.lookup_users_by_email, [
+        email,
+      ]);
+      if (refreshedUserRes.rows.length > 0) {
+        resolvedUser = refreshedUserRes.rows[0];
+      }
     }
 
     // JWT must exist before issuing tokens
@@ -288,7 +310,7 @@ exports.login = async (req, res) => {
     // Generate JWT Token
     const token = generateToken(userId, userRole, email);
 
-    const displayName = user.name || user.rider_name || "User";
+    const displayName = resolvedUser.name || resolvedUser.rider_name || "User";
 
     // Determine redirect path
     const redirectPath =
@@ -305,8 +327,8 @@ exports.login = async (req, res) => {
       user: {
         id: userId,
         name: displayName,
-        email: user.email,
-        region_id: user.region_id || null,
+        email: resolvedUser.email,
+        region_id: resolvedUser.region_id || null,
       },
       redirectPath,
     });
